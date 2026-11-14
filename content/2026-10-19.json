@@ -1,0 +1,97 @@
+{
+  "date": "2026-10-19",
+  "title": "KV 推送、专用 decode 与在线验证预算",
+  "summary": "本期以三篇 vLLM 工程文章串联延迟关键路径、模型专用 kernel 和投机解码在线统计。重点是每一项优化改变什么、适用在哪里，以及如何检验正确性。",
+  "tags": ["P/D 分离", "MoE", "Speculative decoding", "性能工程"],
+  "window": {"start": "2026-10-12", "end": "2026-10-19"},
+  "sourceHealth": "degraded",
+  "coverage": [
+    "由 2026-10-19 历史研究报告整理为公开摘要；本次迁移未重新访问原文或独立复现实验。",
+    "原采集的 arXiv API 日期过旧、RSS fallback 为空，随后使用 recent-list HTML fallback；这属于来源覆盖路径缺口。",
+    "LMSYS 动态页未取得系统条目。关注列表中的部分论文只确认标题与主题，公开版保留其候选性质。"
+  ],
+  "highlights": [
+    {
+      "title": "Push-Based KV Transfer to Improve TTFT and TPOT for Disaggregated Inference in vLLM",
+      "url": "https://vllm.ai/blog/2026-10-14-nixl-push-connector",
+      "published": "2026-10-14",
+      "topic": "P/D 分离 / KV transfer",
+      "summary": "通过前移 decode 侧的准备工作，缩短 prefill 完成后仍需串行执行的 KV 传输控制路径。",
+      "mechanism": "decode 提前注册目标块，与 prefill 按请求 ID 汇合；准备齐全后由 prefill 侧使用 NIXL WRITE 推送 KV，decode 收到各 TP rank 完成通知后继续执行。",
+      "limits": "历史研究摘要，未独立复现。测试涉及 Qwen3-32B、1P1D 与 P5en / EFA，并关闭 decode prefix caching；更早选择 decode 实例也会减少后续调度灵活性。",
+      "reading": "按 Architecture overview、Threading model、Performance data、How to run benchmark 阅读，先找出被移出临界路径的操作。"
+    },
+    {
+      "title": "Hyper Optimizing Kimi K3 in vLLM: Moving Fast and Responsibly",
+      "url": "https://vllm.ai/blog/2026-10-16-kimi-k3-megakernel",
+      "published": "2026-10-16",
+      "topic": "MoE / Decode kernel",
+      "summary": "小 batch 多 GPU decode 的延迟来自计算、提交、权重读取与通信等多项开销，模型特化路径需要配套正确性与覆盖验证。",
+      "mechanism": "使用 CuTe DSL 专用 decode 路径，结合按 batch 调整形状、算子与 all-reduce 融合、router 分片、通信计算重叠及权重预取。",
+      "limits": "历史研究摘要，未独立复现。优化限定在特定 Blackwell、NVLink domain、TP 和 batch 条件；decode-only 数据与端到端 AgentX 指标不能直接混比。",
+      "reading": "先读 Tune shapes 与 Overlap computation and communication，再读 Validate correctness、Check performance broadly 和 Performance Deep Dive。"
+    },
+    {
+      "title": "Adaptive Verification Without a Confidence Head",
+      "url": "https://vllm.ai/blog/2026-10-14-adaptive-verification-online-estimator",
+      "published": "2026-10-14",
+      "topic": "Speculative decoding / 在线估计",
+      "summary": "为没有 confidence head 的 drafter 在线估计接受概率，使验证预算能够随模型对与工作负载调整。",
+      "mechanism": "利用 drafter 概率和 target 正常验证产生的标签，拟合共享斜率、逐 draft position 偏置的 logistic 模型，并周期性更新估计。",
+      "limits": "历史研究摘要，未独立复现。校准质量与分类分数不同，选择预测信号还需保留采样语义；特定并发下 fixed verification 可能仍有优势。",
+      "reading": "按 Problem、Online-Fitted Acceptance Estimator、Scoring the Distribution、Fitting the Coefficients、Benchmarks / Limitations 阅读。"
+    }
+  ],
+  "watch": [
+    {
+      "title": "Scaling Kimi K3 on AMD Instinct MI355X",
+      "url": "https://vllm.ai/blog/2026-10-16-kimi-k3-mi355x",
+      "published": "2026-10-16",
+      "topic": "异构硬件 / MoE serving",
+      "summary": "用于对照不同硬件上的推理瓶颈与实现取舍。",
+      "limits": "历史候选摘要，原报告未深读实验，本次未重新核验或独立复现。"
+    },
+    {
+      "title": "Serving Reflection Beam on vLLM from Day 0",
+      "url": "https://vllm.ai/blog/2026-10-16-reflection-beam",
+      "published": "2026-10-16",
+      "topic": "推理框架 / 模型适配",
+      "summary": "作为大型 MoE serving 与投机解码适配的后续阅读入口。",
+      "limits": "历史候选摘要，原报告未提取完整实验条件，本次未重新核验或独立复现。"
+    },
+    {
+      "title": "When the KV Cache Is Slower Than the GPU",
+      "url": "https://arxiv.org/abs/2610.21500",
+      "topic": "KV cache / Remote tier",
+      "summary": "关注远端 KV 层级与 context-parallel prefill 的系统问题。",
+      "limits": "历史候选摘要，仅确认题目与类别；实验和实现细节未从原报告确认，本次未独立复现。"
+    },
+    {
+      "title": "Delta Tokenizer",
+      "url": "https://arxiv.org/abs/2610.19801",
+      "topic": "Tokenization / CPU 并行",
+      "summary": "从 session delta 和多核处理角度追踪长 prompt 的前端成本。",
+      "limits": "历史候选摘要，原报告未完整核验论文细节，本次未独立复现。"
+    },
+    {
+      "title": "AlignPred",
+      "url": "https://arxiv.org/abs/2610.17970",
+      "topic": "KV cache / Compression",
+      "summary": "作为 KV 压缩保真度与可消费性之间关系的阅读线索。",
+      "limits": "历史候选摘要，指标定义与实验结果需读原文后判断，本次未重新核验或独立复现。"
+    }
+  ],
+  "practice": {
+    "title": "设计最小 serving benchmark 证据矩阵",
+    "duration": "1–2 小时",
+    "requirements": "普通电脑、一份公开 benchmark 配置或自行构造的请求样例；无需执行 GPU 实验。",
+    "steps": [
+      "列出 workload 版本、模型 revision、prefix cache、warmup / measure、token 数、finish reason 与客户端计时字段。",
+      "为每项记录采集位置、比较前提和失效条件，例如样本不完整或服务生命周期改变。",
+      "设计一个输入长度与请求到达率的最小二维 sweep，只写计划和预期观察，不填未测结果。"
+    ],
+    "deliverable": "一页证据矩阵与最小 sweep 计划。",
+    "acceptance": "能明确区分客户端延迟、服务端阶段耗时与 GPU 归因，并给每个比较指定相同的 workload 和环境前提。"
+  },
+  "progress": []
+}

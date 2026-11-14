@@ -1,0 +1,63 @@
+{
+  "date": "2026-10-26",
+  "title": "跨设备 KV 传输，与可验证的推理调优",
+  "summary": "本期从 HAWK 的 GPU–NPU 数据路径和 TensorRT 的编译搜索出发，讨论推理优化如何同时满足布局、精度和性能约束。另附一篇 SGLang 低延迟运行时延伸阅读。",
+  "tags": ["推理框架", "KV cache", "性能工程"],
+  "window": {"start": "2026-10-19", "end": "2026-10-26"},
+  "sourceHealth": "degraded",
+  "coverage": [
+    "本页为历史周报的公开整理版，2026-10-30 编辑；保留当时的来源与核验边界，未重新运行实验。",
+    "arXiv API 时效检查触发 fallback，RSS 无结果后采用 recent-list HTML；Google Research RSS 出现 TLS EOF。LMSYS 动态页解析为空后使用一次定向官方检索。覆盖不完整不代表没有相关研究。",
+    "去重后的源缓存有 311 条：arXiv 论文 273、RSS 16、HTML 14、GitHub Trending 5、采集警告 3。此口径不同于各 collector 去重前的输出数量。",
+    "SGLang Low-Latency Mode 发表于 10 月 18 日，位于本期窗口之外，明确列为延伸阅读。其他日期来自历史原文核对或采集记录；本页不主张独立复现。"
+  ],
+  "highlights": [
+    {
+      "title": "HAWK: Heterogeneity-Aware KV Cache Transfer for Efficient GPU-NPU Phase-Disaggregated LLM Inference",
+      "url": "https://arxiv.org/abs/2610.29873",
+      "published": "2026-10-21",
+      "topic": "KV cache",
+      "summary": "将 prefill 放在 GPU、decode 放在 NPU 后，KV cache 的跨设备传输与张量布局成为关键约束。",
+      "mechanism": "在接收端分配适应目标张量布局的 RDMA buffers，让 GPU 连续缓冲区的数据直接写入可消费的 NPU 布局，减少额外重排。工程阅读重点是 buffer 所有权、数据排列与传输完成的契约。",
+      "limits": "预印本。原报告核对了摘要与系统概览图，但未完整核验实验硬件型号、精度、workload 和成本假设；因此公开版不摘取加速或成本倍数，也不据此推断通用 GPU–NPU 优势。",
+      "reading": "Abstract → Figure 3 系统概览 → KV transfer 设计 → Evaluation；逐项核对硬件、互连、模型与 SLO。"
+    },
+    {
+      "title": "Scaling NVIDIA TensorRT Performance Optimization Beyond a Single Build Route with the Global Performance Tuner, Part 1",
+      "url": "https://developer.nvidia.com/blog/scaling-nvidia-tensorrt-performance-optimization-beyond-a-single-build-route-with-the-global-performance-tuner-part-1/",
+      "published": "2026-10-23",
+      "topic": "性能工程",
+      "summary": "同一个模型可以编译成多种 engine；融合、布局、精度与 kernel 选择会相互影响，局部速度并不能直接代表端到端收益。",
+      "mechanism": "Global Performance Tuner 将不同 build routes 视为候选，在精度约束内进行构建与测量。固定模型、输入、硬件和环境之后，才有条件比较不同候选的性能。",
+      "limits": "第一方机制文章，主要讨论编译搜索方法；不提供本页可引用的某一 LLM serving 加速结论。温度、频率与系统负载仍会造成测量噪声。",
+      "reading": "What challenge does the Global Performance Tuner feature solve? → Mathematical theory for deep learning compiler performance → 文内 Part 2 链接。"
+    },
+    {
+      "title": "SGLang Low-Latency Mode: Kernels and Runtime",
+      "url": "https://www.lmsys.org/blog/2026-10-18-sglang-low-latency-mode",
+      "published": "2026-10-18",
+      "topic": "推理框架",
+      "extension": true,
+      "summary": "延伸阅读：专用 kernel 带来的性能收益，还需要运行时接口、fallback 和回归测试支撑。",
+      "mechanism": "SGLang 用插件框架接入特定模型和硬件的低延迟实现。值得关注的是权重绑定、forward 输出、KV 写入与 graph execution 的接口边界，以及同硬件 AgentX replay 的对照设计。",
+      "limits": "发布日期在本期窗口外。第一方性能结果限定于原文 GB300/MI355X、模型、DSpark 和并发设置；本页未独立复现，插件接口仍处于演进阶段。",
+      "reading": "性能对照图 → Kernels for Low-Latency Inference → Future Plans 中 CI and Performance Validation。"
+    }
+  ],
+  "watch": [
+    {"title":"GLM-5.3 Optimizations, Part 2: PCP, DCP, and Hybrid HiSparse on 16 H200s","url":"https://vllm.ai/blog/2026-10-23-glm53-part2-pcp-dcp-hisparse","published":"2026-10-23","topic":"推理框架","summary":"把 query 的计算切分与 persistent KV 的存储切分分开解释；长上下文容量收益伴随每层 all-gather 成本。","limits":"原文是特定 16×H200、AgentX 与固定投机接受设置的实验，逻辑 token 吞吐包含缓存输入，不能直接解释为实际 GPU token 计算量。"},
+    {"title":"Announcing Humming: Fast, Flexible Kernels for Quantized Inference","url":"https://vllm.ai/blog/2026-10-21-humming","published":"2026-10-21","topic":"底层优化","summary":"量化 kernel 库与框架集成：关注量化格式、JIT 和 GPU 架构之间的接口关系。","limits":"历史周报中的发现线索；具体性能条件与代码路径未在本次公开整理中重新核验。"},
+    {"title":"Announcing the SGLang AWS Trainium Plugin Beta","url":"https://www.lmsys.org/blog/2026-10-22-sglang-trainium-beta","published":"2026-10-22","topic":"训练系统","summary":"将 Trainium 上的 rollout generation 与 GPU 上的策略更新连接起来，展示训练和推理可独立配置资源的边界。","limits":"Beta 与早期系统里程碑，不代表已经完成成本或吞吐的同条件对照。"},
+    {"title":"RISK-KV: Quality-Aware Selective KV Cache Reconstruction for Distributed LLM Inference","url":"https://arxiv.org/abs/2610.29544","topic":"KV cache","summary":"选择性重建历史 KV，联合观察恢复时间和质量变化；阅读价值在于理解节省存储之外的验收条件。","limits":"预印本；原报告检查了重建结构和恢复延迟图，未独立复现实验。"},
+    {"title":"uGDS: A User-Space Development Kit for High-Performance GPU Direct Storage","url":"https://arxiv.org/abs/2610.30868","topic":"底层优化","summary":"用户态 GPU Direct Storage 的相邻系统线索，适合追问数据加载和 offload 路径上的复制与 IO 成本。","limits":"技术报告；本页未从原文确认其对 LLM workload 的直接收益。"}
+  ],
+  "practice": {
+    "title": "为一次受控 serving benchmark 写出证据矩阵",
+    "duration": "60–120 分钟",
+    "requirements": "一份已有 benchmark 记录或公开实验配置；只需本地文本编辑器，无需启动 GPU 服务。",
+    "steps": ["列出 workload、模型、精度、并发、输入输出长度、预热与正式测量的区分。", "为每个指标标注采集位置和起止事件，并区分客户端耗时、服务端阶段区间和 GPU profiler 时间。", "列出标签变化、进程重启、请求失败、缓存差异等不可比较条件。"],
+    "deliverable": "一页指标与控制变量表，附输入记录的来源。",
+    "acceptance": "每个指标都能解释由谁采集、何时开始结束、何种条件下失效；未测数据保持空缺。"
+  },
+  "progress": []
+}

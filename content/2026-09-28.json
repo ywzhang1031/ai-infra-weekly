@@ -1,0 +1,95 @@
+{
+  "date": "2026-09-28",
+  "title": "从 KV 内存墙到训练重算边界",
+  "summary": "本期围绕 KV cache 的容量与带宽、采样功能的推理开销，以及训练显存预算下的可靠性展开。关注优化适用的条件，也关注实验如何保留失败证据。",
+  "tags": ["KV cache", "vLLM", "训练显存", "可靠性"],
+  "window": {"start": "2026-09-21", "end": "2026-09-28"},
+  "sourceHealth": "degraded",
+  "coverage": [
+    "由 2026-09-28 历史研究报告整理为公开摘要；本次迁移未重新访问原文或独立复现实验。",
+    "原报告记录 Google Research RSS 超时、LMSYS 动态首页解析为空、GitHub Trending C++ weekly 读取不完整；覆盖缺口不代表没有相关工作。",
+    "部分 arXiv 技术图在原采集中通过 PDF fallback 检查；公开摘要仅保留文字与原始来源链接。"
+  ],
+  "highlights": [
+    {
+      "title": "The KV Cache Is the New Memory Wall",
+      "url": "https://arxiv.org/abs/2609.30854v1",
+      "published": "2026-09-25",
+      "topic": "推理性能 / KV cache",
+      "summary": "以统一的数据搬运视角比较长上下文 KV 优化，帮助区分显存容量不足与每步内存流量过大。",
+      "mechanism": "按 KV 管理方式组织既有研究，再结合权重流量、上下文长度、batch 与互连条件分析瓶颈转换。Paging、prefix sharing、量化、淘汰和分层缓存解决的约束并不相同。",
+      "limits": "历史研究摘要，未独立复现。该工作包含综述与推导边界，不能把派生量视为统一硬件上的实测；质量、格式转换和互连成本会影响端到端收益。",
+      "reading": "先读 Abstract 与内存模型，再看 Figure 1 / Table 1，最后读 roofline、scheduler co-design 和 evaluation gaps。"
+    },
+    {
+      "title": "Watermarking in vLLM",
+      "url": "https://vllm.ai/blog/2026-09-24-watermarking-in-vllm",
+      "published": "2026-09-24",
+      "topic": "推理框架 / Sampling",
+      "summary": "从一个采样功能看 serving 工程：水印如何兼顾输出分布、临时内存、吞吐与投机解码兼容性。",
+      "mechanism": "将 keyed 随机数生成、Gumbel 变换和最大值选择融合到 GPU kernel，避免展开完整 batch-vocabulary 噪声矩阵；通过双 key 与重复上下文处理协调投机采样和输出多样性。",
+      "limits": "历史研究摘要，未独立复现。官方博客中的质量与吞吐实验有特定模型和 batch 条件；历史报告没有完整确认硬件、精度及服务配置，不据此承诺普遍收益。",
+      "reading": "按 Gumbel-max Trick、vLLM implementation、Speculative decoding、Maintaining output diversity、Throughput measurements 阅读。"
+    },
+    {
+      "title": "Deterministic Regime Switching and Feasibility Inversion in Dynamic Tensor Rematerialization",
+      "url": "https://arxiv.org/abs/2609.31250v1",
+      "published": "2026-09-25",
+      "topic": "训练系统 / Rematerialization",
+      "summary": "细粒度显存预算扫描显示，增加内存不一定让在线重算策略单调改善；系统可能在可行、极慢与失败之间切换。",
+      "mechanism": "在 simrd 模拟器中回放 LSTM 与 ResNet-32 traces，对预算和 eviction 评分进行受控扫描，并区分重算成本、OOM 和其他终止类型。",
+      "limits": "历史研究摘要，未独立复现。实验是 simulator 结果，不是 GPU 训练实测；不能直接推断 PyTorch checkpointing 或 FSDP 的生产行为。",
+      "reading": "先读 reproducibility，再比较 LSTM 与 ResNet-32 的预算扫描，最后读 Implications，检查失败分类是否足以解释非单调现象。"
+    }
+  ],
+  "watch": [
+    {
+      "title": "Block Sparse Attention with Log-Linear Complexity",
+      "url": "https://arxiv.org/abs/2609.31093v1",
+      "topic": "Attention / Kernel",
+      "summary": "PISA 将块选择与 Triton kernel 共同设计，区分训练、prefill 和 decode 的提交成本。",
+      "limits": "历史研究摘要，未独立复现；关注所测序列长度与模型条件，不能把块选择提速等同于端到端加速。"
+    },
+    {
+      "title": "Beyond Mean Attention: Diversity-Aware, Layer-Wise Scoring for KV Cache Eviction",
+      "url": "https://arxiv.org/abs/2609.30738v1",
+      "topic": "KV cache / Eviction",
+      "summary": "在平均 attention 分数之外考虑分散程度与冗余，研究逐层 KV 淘汰策略及质量约束。",
+      "limits": "历史研究摘要，未独立复现；质量结果依赖模型、数据集和 KV budget。"
+    },
+    {
+      "title": "Efficient MoE Training for Biological Foundation Models",
+      "url": "https://developer.nvidia.com/blog/efficient-moe-training-for-biological-foundation-models/",
+      "topic": "MoE / 低精度训练",
+      "summary": "通过 grouped expert GEMM 与低精度融合减少逐 expert 提交和中间数据开销，适合阅读训练 kernel 的接口与数据流。",
+      "limits": "历史研究摘要，未独立复现；厂商 recipe 与硬件条件决定性能结果。"
+    },
+    {
+      "title": "How SWE-Serve Exposes the Gap Between Local Tests and Live Serving",
+      "url": "https://developer.nvidia.com/blog/how-swe-serve-exposes-the-gap-between-local-tests-and-live-serving/",
+      "topic": "Serving / 验证方法",
+      "summary": "从真实推理工程任务观察非 live-serving 检查与服务运行验证之间的差异，强调测试层级覆盖。",
+      "limits": "历史研究摘要，未独立复现；任务集结论不能替代具体补丁的真实服务验证。"
+    },
+    {
+      "title": "Validate GPU Cluster Readiness Before AI Workloads Land",
+      "url": "https://developer.nvidia.com/blog/validate-gpu-cluster-readiness-before-ai-workloads-land/",
+      "topic": "分布式系统 / 集群可靠性",
+      "summary": "用主动分布式负载验证集群 readiness，并将故障关联到节点与通信、训练等类别。",
+      "limits": "历史研究摘要，未独立复现；基础健康检查与长时间真实负载仍是不同的验证范围。"
+    }
+  ],
+  "practice": {
+    "title": "制作一页 KV cache 容量与流量对照表",
+    "duration": "60–90 分钟",
+    "requirements": "普通电脑、KV memory wall 原文中的模型参数与表格；无需 GPU 服务。",
+    "steps": [
+      "选一个公开模型，记录层数、KV heads、head dimension、元素字节数与上下文长度，并注明来源。",
+      "根据原文定义复算 KV 容量，分别改变上下文长度和 batch，记录单位与假设。",
+      "对 paging、prefix sharing、量化和淘汰分别说明其主要改变容量、数据搬运还是质量。"
+    ],
+    "deliverable": "一页含输入参数、计算结果、单位及限制的 Markdown 表。",
+    "acceptance": "能够解释容量与带宽收益的差别；计算与原文条件一致，派生结果明确标为估算。"
+  },
+  "progress": []
+}

@@ -1,0 +1,112 @@
+{
+  "date": "2026-11-02",
+  "title": "KV 回收、弹性显存与训练通信的隐藏成本",
+  "summary": "从异步 KV 写入的释放时机，到专家权重与状态共享页池，再到 FSDP2 的布局复制和 SM 争用：本周关注资源所有权如何同时决定正确性、吞吐和延迟。",
+  "tags": [
+    "推理框架",
+    "KV cache",
+    "训练系统",
+    "性能工程"
+  ],
+  "window": {
+    "start": "2026-10-26",
+    "end": "2026-11-02"
+  },
+  "sourceHealth": "degraded",
+  "coverage": [
+    "观察窗口为2026-10-26至2026-11-02（Asia/Shanghai），7天，未扩至10天。collector于11-02 08:34左右运行；来源发表日期与窗口判断另按原文核对，不把抓取时间当发表日期。",
+    "source_health=degraded。arXiv API的3天时效阈值触发fallback，RSS五类均0，recent-list HTML五类各20；API的180条记录仍在7天窗内，不能称全部窗口外。recent-list日期可能是列表公告日，所选论文均核对原文v1日期。",
+    "collector原始非警告输出：arXiv280、RSS35、HTML16、GitHub Trending5。窗口过滤与collector去重后缓存305条（含2警告）；进一步按arXiv去版本ID、canonical URL和标题核对，为246条非警告发现记录，另有1条官方定向发现。以上均不是严格Infra入选篇数。",
+    "窗口内feed条目：Google1、Microsoft2、Hugging Face7、NVIDIA3、BAIR0；HTML为vLLM1、PyTorch8、LMSYS0。LMSYS动态页解析缺口用1/6次官方定向查询补读，无法据此声称全面覆盖；BAIR零条与各来源cap也不能解释为没有新研究。全局360 cap未触发，各源上限仍可能遗漏。",
+    "所选3篇重点和5条关注均读到第一方原文。技术图和公式已在阅读时检查；本期公开页面维持纯文本与原始来源链接。GPU sharing两张无标题附图404，未引用；不影响已检查的机制正文。",
+    "排除：Queuing for Inference原始v1为10-24；TorchTitan更新为10-21/22，均不计本期。泛Agent产品/榜单/营销和无系统贡献应用不纳入。GitHub Trending只作发现，采集时间不代表新发布。",
+    "性能数字均为原作者报告，未经本站独立复现。未核验的模型、硬件、精度或实验字段均明确标为“未从来源确认”，不由摘要推断可靠性或可复现性。"
+  ],
+  "highlights": [
+    {
+      "title": "SGLang security update: improving request isolation",
+      "url": "https://www.lmsys.org/blog/2026-10-26-cf-security/",
+      "published": "2026-10-26",
+      "topic": "推理框架",
+      "summary": "P/D 分离把 KV 写入放到异步传输栈后，请求 abort 与底层写入完成并非同一事件。过早把目的槽位交给下一个请求，会形成跨请求的 use-after-free。文章还区分了 intake rejection 继续进入 handoff 的准入错误与传输中断后的回收竞态。",
+      "mechanism": "decode 在 abort 后暂存 KV slots、request-pool row 和 metadata entry；通知每个 prefill rank 停止未发出的工作，等所有 rank 的已启动写入 drain 后返回 ABORT_ACK，才走快速回收。generation tags 防止复用 room ID 时误消费旧 ack；失败的传输不能伪装成 drained。 回收延迟占用容量，故障风暴会放大 held KV；丢 ack 会退到 timeout。原文明说 timeout 是实际兜底，只有剩余写入已经停止才安全，时间到本身不是完成证明。可选 checksum 增加 GPU 读和同步，且不能代替生命周期屏障。",
+      "limits": "第一方报告：2×H100、1P1D Mooncake、每轮 1024 请求、并发 256，3 个实验臂各 7 次，共 21 次；补丁前与开关启闭的吞吐差异在 ±2% 内，95% CI 均跨零。另有 2×H200、132 个传输中 abort 的测试，未崩溃且 held slots 均回收。 模型、精度、请求长度分布及原始逐轮数据：未从来源确认。±2% 内且 CI 跨零不能解释为零成本；正常路径吞吐不代表 abort 风暴下的 SLO。文章的延迟 harness 能稳定制造槽位重叠，但正文也限定单个 P/D pair 的软件延迟本身不足以保证真实污染，不能把“重叠可复现”升级成“泄漏必然复现”。本站未重现实验。",
+      "reading": "The Problem: When Is a KVCache Slot Actually Free? → Figure 1 / Figure 3 → Deterministic Reproduction → The Fix: Deferred KVCache Release → Performance Impact。代码入口只作为下一步阅读：正文链接 #35049、#37077、#43719，本期未走读其 diff。"
+    },
+    {
+      "title": "Rimuru: Unified Memory Management for Modern LLM Serving via Elastic Expert Offloading",
+      "url": "https://arxiv.org/abs/2610.40305",
+      "published": "2026-10-29",
+      "topic": "KV cache",
+      "summary": "模型专家权重缓存与 KV/SSM/conv state 各自固定分区，会出现一边缺页、另一边却有可驱逐空间的情况。把专家移到 CPU 只释放容量，尚未解决不同张量之间如何复用这些容量。",
+      "mechanism": "共享物理页池叠加 tensor-specific memory views，以不同页大小和页表解释同一存储；通过 huge-page 对齐、拆分/合并跨粒度复用容量。page-table-aware FusedMoE 直接读不连续专家权重，避免先复制到连续缓冲区。CPU adjuster 在请求调度后生成 cache delta，worker 再结合预取和执行更新 residency。 扩大 KV 可接纳更多请求，却会驱逐专家并增加 CPU–GPU IO；吞吐提升可同时伴随更差 TPOT。策略依赖离线 expert hotset，采用缩/扩阈值间隔与每轮扩容上限抑制来回抖动；工作负载分布改变时仍需重新验证。",
+      "limits": "§8：8×RTX 5090 32GB / PCIe 5.0×16 / Xeon 8470Q，以及 2×RTX 4090D 24GB / PCIe 4.0×16 / Xeon 8368Q；包含单、双、八卡配置。Qwen3-30B-A3B、Qwen3.5-35B-A3B、Qwen3.5-122B-A10B；ShareGPT 变到达率；对照 vLLM、SGLang、KTransformers、Fate、llama.cpp，比较 output token/s、TTFT、TPOT；可用时均禁用 CUDA Graph。 §8 正文未明确每个系统/模型的完整精度和量化配置，未从来源确认，不能默认所有基线同精度。“最高 19.03×”来自无 AMX 的 4090D 平台上相对 KTransformers 的特定负载；对 serving engines 的报告范围为 1.1–2.88×，仍受配置限制。§8.4 在相同输入/路由/权重、专家驻留的 kernel 对照中平均开销 +0.83%，不是端到端收益。正文称基于 vLLM，但实现版本和可执行复现仓库未从本期来源确认；未独立复现。",
+      "reading": "§2.3 / Figure 4 的同 workload 比较 → §4 / Figure 5 → §5.1–5.3 页表和分配 → §6.1 / Algorithm 1 → §8.1–8.4；先核对基线 CPU 指令集与精度，再读最高倍数。"
+    },
+    {
+      "title": "The Endgame of FSDP Communication: Layout-Aware Collectives on Copy Engines, RDMA, and NVSwitch",
+      "url": "https://arxiv.org/abs/2610.38228",
+      "published": "2026-10-28",
+      "topic": "训练系统",
+      "summary": "FSDP2 保留逐参数张量，但 collective 使用 flat rank-major 缓冲区。all-gather 后布局复制、梯度 packing 及通信 kernel 占用 SM，可能在链路尚未饱和前就拖慢训练。",
+      "mechanism": "TIDE-AG 将 shards 直接放到参数最终地址，用 NVSwitch multicast 与 paced recursive-doubling RDMA 传输，transport/placement 不占 SM。TIDE-RS 直接消费逐参数 BF16 梯度，以 copy engines 和短驻留 CTA 做局部 FP32 累加，再完成跨节点归约。两阶段流水线分离梯度读取和网络推进；In-Place 与 Slot-Reuse 改变梯度驻留和缓冲复用。 zero-copy 指去掉 FSDP 布局转换与全组 packing，并非所有字节从此没有搬运，也不是 RS 完全不占 SM。必须同时满足累加精度、写入布局、slot generation 和异步完成顺序。通信 kernel 的独立时延更短，不一定意味着它对并发 GEMM 的干扰更小。",
+      "limits": "§7.1：最多 8 nodes×8 GPUs，节点内 NVSwitch、每 GPU 一条 RDMA rail；训练均为 64 GPUs。Llama-3.1-70B 8K–32K tokens/GPU、Qwen3-30B-A3B 16K–32K、Wan2.2 高噪声专家 17 frames / local batch 1–4。比较 Stock FSDP2、FSDP2+SymmMem、TIDE；同模型/精度/optimizer/checkpointing/输入；重复启动，每轮预热后 40–100 steps，报告 step-time 中位数和整卡峰值显存。 GPU 具体型号、完整训练 dtype 配置：未从来源确认。可确认 RS 为 BF16 输入/FP32 累加，依赖公开 NCCL 2.31+ API；§6 报告对照 stock NCCL 2.31.2。Qwen 16K 的 step time 相比 Stock 降 27.1%、相比 SymmMem 降 6.0%，不是普遍加速率。原文同一 reduction plan 可重复，但与 stock 的浮点求和结合顺序不同。属于预印本；本期未确认可下载的 TIDE 实现仓库，未独立复现。",
+      "reading": "§2.1 布局不匹配 / Figure 1 → §2.2 SM wave quantization / Figure 4 → §3–4 TIDE-AG/RS → §5.2–5.3 pipeline / Slot-Reuse → §7.1–7.3；附录 E 用于核对 release 与 generation 不变量。"
+    }
+  ],
+  "watch": [
+    {
+      "title": "PDScope: Breaking the Prefill-Decode Seesaw for Memory-Bound MoE Inference",
+      "url": "https://arxiv.org/abs/2610.39216",
+      "published": "2026-10-29",
+      "topic": "推理框架",
+      "summary": "把 prefill 的计算需求与 decode 的 PCIe/专家加载需求分开建模：PhasePer 预测专家，AdaptSched 使用跨层成本决策，静态图与预取执行降低调度开销。适合看“同一个 offload 策略为什么两阶段相互牵制”。",
+      "limits": "§5.1 为 A100+Xeon 6230R、RTX3090+EPYC7452，PCIe4×16；主测4个 BF16 MoE 模型。大模型扩展另用 INT8，不能混成同精度结果。§5.6 的 A100/Qwen3-30B-A3B、1024/64 单层 trace 关闭 hot-expert preload，可作为隔离变量的阅读样例。未复现。"
+    },
+    {
+      "title": "DolphinRouting: Cluster-Level Binary Routing for Disaggregated LLM Inference Serving",
+      "url": "https://arxiv.org/abs/2610.40292",
+      "published": "2026-10-29",
+      "topic": "性能工程",
+      "summary": "按原始输入长度、两侧缓存调整后的输入长度和输出长度信息聚类，离线从端到端 SLO 学习每簇二元路由，在线查表选择本地或远端 prefill。",
+      "limits": "Qwen3.8-72B、每节点4×H20-SXM、vLLM+Mooncake，比较P3D1/P2D2。混合与真实trace改善P90，但ArXiv/L-Eval没有一致双指标收益；Dynamo基线仅覆盖文中长度规则，不代表其所有负载策略。输入输出长度信息在线如何获得也应继续审阅，不能默认预知真实输出。"
+    },
+    {
+      "title": "PyTorch 2.15 Release Blog",
+      "url": "https://pytorch.org/blog/pytorch-2-15-release-blog/",
+      "published": "2026-10-28",
+      "topic": "训练系统",
+      "summary": "官方发布入口：新版 NCCL backend 的 flight recorder、NIXL one-sided transport，以及 FSDP2/pipelining 的梯度累积和通信重叠控制。适合顺着正文 PR 列表寻找训练通信实现。",
+      "limits": "2026-10-28 发布；仅确认官方功能和链接，未逐个走读 PR、未确认本机兼容或获得性能结果。正文未提供一个可作为统一结论的 LLM 训练吞吐对照。无可用实验图/公式。"
+    },
+    {
+      "title": "Memory-Enforced GPU Sharing in Kubernetes with NVIDIA CUDA 13.4",
+      "url": "https://developer.nvidia.com/blog/memory-enforced-gpu-sharing-in-kubernetes-with-nvidia-cuda-13-4/",
+      "published": "2026-10-27",
+      "topic": "资源调度",
+      "summary": "GPU Fractioning Operator 在节点侧监督 MPS 并实施每容器显存 request/limit，KAI Scheduler 负责放置与注解；把“调度声明”和“运行时强制执行”分开。",
+      "limits": "原文 CUDA13.4 / KAI v0.18.0；time-slicing 与 sm-sharing 的并发和错误域不同。同GPU不能混用两种compute mode；显存份额不等于硬件隔离或尾延迟保障。本期未验证平台兼容、性能与故障隔离。两张无标题图片下载404，未引用；已读原文Figure1。"
+    },
+    {
+      "title": "How to Check and Configure NVIDIA GPUDirect Storage for Your Platform",
+      "url": "https://developer.nvidia.com/blog/how-to-check-and-configure-nvidia-gpudirect-storage-for-your-platform/",
+      "published": "2026-10-30",
+      "topic": "底层优化",
+      "summary": "gds-diag 围绕实际存储路径检查支持矩阵、配置和拓扑，以 PASS/WARN/FAIL/INFO 与 JSON 输出诊断结果。阅读价值在 IO 路径验收，不在自然语言包装。",
+      "limits": "CLI本身只需Linux/Python3.8+；文章给出的GDS使用条件另含数据中心GPU和CUDA12.2+。工具可给建议，不证明数据实际绕过CPU或性能提高；需另测路径和workload，不能默认消费级5090/WSL可用。"
+    }
+  ],
+  "practice": {
+    "title": "用 CPU 事件模拟验证 KV 槽位何时可以复用",
+    "duration": "60–120 分钟",
+    "requirements": "本地 Python 3、文本编辑器和 SGLang 原文；无需 CUDA、远程主机或多卡。输入为2个目的槽位、请求A/B、2个prefill ranks，以及write-posted / abort / write-complete / ack / allocate事件。",
+    "steps": [
+      "先读原文 The Problem、Deferred Release 和 Failed Mooncake Sends，写出每个slot的owner、generation、pending writers与held状态。",
+      "用一个确定性事件队列构造4条trace：abort后晚写、一个rank迟到、旧generation ack、send失败且无drain证明。先让立即free策略显现A写入B槽位的冲突，再让hold策略等待所有当前generation的drain ack。",
+      "将timeout单独标为fallback：若pending writers仍未知，不宣称“安全释放已证明”。保存每条trace的状态转换和最终断言，不模拟GPU速度或网络吞吐。"
+    ],
+    "deliverable": "一个不依赖第三方包的小脚本、一份4条事件轨迹和一页不变量说明。",
+    "acceptance": "旧策略至少1条轨迹出现write-after-reuse；新策略在全部必要ack前拒绝复用，忽略旧ack；失败send不能产生成功drain；timeout边界被明确记录。产物只证明模型中的状态机性质，不证明真实RDMA后端已修复。"
+  },
+  "progress": []
+}

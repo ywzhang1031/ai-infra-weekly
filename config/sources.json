@@ -1,0 +1,146 @@
+{
+  "max_total_items": 360,
+  "arxiv": {
+    "categories": [
+      "cs.DC",
+      "cs.PF",
+      "cs.AR",
+      "cs.LG",
+      "cs.CL"
+    ],
+    "max_results": 180,
+    "rss_fallback_max_per_category": 20,
+    "recent_html_max_per_category": 20,
+    "recent_html_stale_after_days": 3,
+    "request_delay_seconds": 1.0
+  },
+  "rss": {
+    "max_per_feed": 8,
+    "feeds": [
+      {
+        "name": "Google Research Blog",
+        "url": "https://research.google/blog/rss/",
+        "type": "official-blog"
+      },
+      {
+        "name": "Microsoft Research Blog",
+        "url": "https://www.microsoft.com/en-us/research/feed/",
+        "type": "official-blog"
+      },
+      {
+        "name": "Hugging Face Blog",
+        "url": "https://huggingface.co/blog/feed.xml",
+        "type": "technical-blog"
+      },
+      {
+        "name": "BAIR Blog",
+        "url": "https://bair.berkeley.edu/blog/feed.xml",
+        "type": "academic-blog"
+      },
+      {
+        "name": "NVIDIA Technical Blog - AI Infrastructure",
+        "url": "https://developer.nvidia.com/blog/feed/",
+        "type": "technical-blog",
+        "include_keywords": [
+          "inference",
+          "serving",
+          "training",
+          "GPU",
+          "CUDA",
+          "Triton",
+          "NCCL",
+          "MoE",
+          "TensorRT",
+          "Dynamo",
+          "LLM",
+          "distributed",
+          "kernel",
+          "profiling",
+          "benchmark",
+          "memory",
+          "scheduling"
+        ]
+      }
+    ]
+  },
+  "html": {
+    "max_per_source": 8,
+    "sources": [
+      {
+        "name": "vLLM Blog",
+        "url": "https://vllm.ai/blog",
+        "base_url": "https://vllm.ai",
+        "type": "official-blog",
+        "url_patterns": [
+          "re:^https://vllm\\.ai/blog/[^/?#]+"
+        ],
+        "timeout_seconds": 20
+      },
+      {
+        "name": "PyTorch Blog",
+        "url": "https://pytorch.org/blog/",
+        "base_url": "https://pytorch.org",
+        "type": "official-blog",
+        "url_patterns": [
+          "re:^https://pytorch\\.org/blog/[^/?#]+"
+        ],
+        "exclude_url_patterns": [
+          "/blog/page/",
+          "/blog/feed/",
+          "/blog/category/",
+          "/blog/tag/"
+        ],
+        "timeout_seconds": 20
+      },
+      {
+        "name": "LMSYS Blog",
+        "url": "https://www.lmsys.org/blog/",
+        "base_url": "https://www.lmsys.org",
+        "type": "official-blog",
+        "url_patterns": [
+          "re:^https://(?:www\\.)?lmsys\\.org/blog/[^/?#]+"
+        ],
+        "timeout_seconds": 20
+      }
+    ]
+  },
+  "github_trending": {
+    "enabled": true,
+    "since": [
+      "weekly"
+    ],
+    "languages": [
+      "c++",
+      "python"
+    ],
+    "max_per_page": 10,
+    "include_keywords": [
+      "LLM",
+      "inference",
+      "serving",
+      "training",
+      "distributed",
+      "GPU",
+      "CUDA",
+      "Triton",
+      "PyTorch",
+      "tensor",
+      "kernel",
+      "NCCL",
+      "MoE",
+      "vLLM",
+      "SGLang",
+      "benchmark",
+      "quantization",
+      "compiler",
+      "推理",
+      "训练",
+      "算子"
+    ],
+    "exclude_keywords": [
+      "wallpaper",
+      "theme",
+      "game mod"
+    ]
+  }
+}

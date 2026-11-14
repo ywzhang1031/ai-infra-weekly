@@ -1,0 +1,97 @@
+{
+  "date": "2026-10-12",
+  "title": "从首 token 路径到可复现训练",
+  "summary": "本期追踪模型特化 serving、GPU tokenization 与确定性预训练，重点观察端到端计时边界、缓存命中后的新瓶颈，以及正确性约束下的性能成本。",
+  "tags": ["vLLM", "Tokenization", "Megatron", "性能归因"],
+  "window": {"start": "2026-10-05", "end": "2026-10-12"},
+  "sourceHealth": "degraded",
+  "coverage": [
+    "由 2026-10-12 历史研究报告整理为公开摘要；本次迁移未重新访问原文或独立复现实验。",
+    "原 collector 状态为 healthy，但 LMSYS 动态首页解析为空，随后使用一次定向官方补搜；公开版将有效覆盖标为 degraded，避免误解为逐源完整。",
+    "部分论文 HTML 可读但图像提取没有取得技术图；公开版不补造图表或实验数据。"
+  ],
+  "highlights": [
+    {
+      "title": "DeepSeek-V4.1-Flash on vLLM: 5x Agentic Throughput Since Day 0",
+      "url": "https://vllm.ai/blog/2026-10-07-deepseek-v41-flash",
+      "published": "2026-10-07",
+      "topic": "推理框架 / KV cache",
+      "summary": "从 prefix cache、滑动窗口和 kernel 路径的配合，观察模型专用优化如何影响 TTFT 与吞吐。",
+      "mechanism": "SWA bounded replay 限制命中前缀后的重算范围，再与分段 CUDA graph、融合 kernel 和多流重叠组合，减少特定模型执行路径的计算与提交开销。",
+      "limits": "历史研究摘要，未独立复现。文章结论依赖模型结构、Blackwell 硬件与 AgentX 条件；bounded replay 不是 bit-exact，标题中的倍数不能外推到其他模型。",
+      "reading": "先读 SWA bounded replay，再读 Accuracy / performance results、Kernels 和 Agentic performance，核对各图的硬件与并行策略。"
+    },
+    {
+      "title": "Taking Tokenization off the Host for Agentic LLM Serving",
+      "url": "https://arxiv.org/abs/2610.13325v1",
+      "published": "2026-10-09",
+      "topic": "Serving / Tokenization",
+      "summary": "当 prefix cache 跳过大部分 prefill 后，完整 tokenization 仍可能处于首 token 的关键路径。",
+      "mechanism": "GraphTok 将前端处理、BPE merge 和 token-ID assembly 放进可回放 CUDA graph，并保留参考 tokenizer 的边界与顺序语义；短输入可回到 CPU 路径。",
+      "limits": "历史研究摘要，未独立复现。预印本的收益集中于长上下文、高前缀复用等场景；不能仅凭 BPE 子阶段变快就判断完整 serving 更快。",
+      "reading": "先读 Motivation，确认 tokenization 与 KV lookup 的先后关系，再读 Design、Evaluation 中的 TTFT 与 frontend capacity 对照。"
+    },
+    {
+      "title": "Scale Bitwise-Deterministic Pretraining with NVIDIA Megatron Core",
+      "url": "https://developer.nvidia.com/blog/scale-bitwise-deterministic-pretraining-with-nvidia-megatron-core/",
+      "published": "2026-10-09",
+      "topic": "训练系统 / Determinism",
+      "summary": "把确定性训练理解为可定位、可回放且有明确性能代价的工程问题，而不只是最终 loss 是否接近。",
+      "mechanism": "从端到端指标逐步缩小到语义、模块、operation 与 kernel；使用 per-rank tensor fingerprints 定位最早的不一致，再通过配对运行验证修复。",
+      "limits": "历史研究摘要，未独立复现。官方案例依赖训练 recipe、通信拓扑与 kernel；确定性开销必须在相同模型、精度、并行配置和测量窗口下比较。",
+      "reading": "先读 How to fix determinism when it breaks，再读 Establish a controlled baseline 和 kernel-level optimization，关注 trace 如何支持定位。"
+    }
+  ],
+  "watch": [
+    {
+      "title": "vLLM Support for NVIDIA Vera Rubin NVL72",
+      "url": "https://vllm.ai/blog/2026-10-09-vera-rubin-preview",
+      "published": "2026-10-09",
+      "topic": "硬件 / MoE serving",
+      "summary": "观察内存与互连 locality 如何影响 MoE 权重放置、kernel 和并行策略。",
+      "limits": "历史研究摘要，未独立复现；属于早期硬件适配报告，不能视为跨平台性能结论。"
+    },
+    {
+      "title": "SGLang and Miles on NVIDIA Vera Rubin",
+      "url": "https://www.lmsys.org/blog/2026-10-09-vera-rubin",
+      "published": "2026-10-09",
+      "topic": "推理与训练协同",
+      "summary": "涵盖 MLA pipeline、MoE 通信和 rollout / training 适配，可作为硬件资源改变执行策略的阅读入口。",
+      "limits": "历史研究摘要，未独立复现；bring-up 成功与完整性能基线属于不同证据。"
+    },
+    {
+      "title": "Adaptive DHiSparse: Speculative Decoding over a Load-Adaptive KV Hierarchy",
+      "url": "https://arxiv.org/abs/2610.13708v1",
+      "topic": "KV cache / Speculative decoding",
+      "summary": "让分层 KV 的保留与回收响应负载变化，并配合投机解码，关注容量与实际访问需求的差别。",
+      "limits": "历史研究摘要，未独立复现；host recovery 与缓存 miss 的成本需要结合工作负载评估。"
+    },
+    {
+      "title": "DuoRate: Two-Rate Per-Expert Precision Allocation for Mixture-of-Experts Serving",
+      "url": "https://arxiv.org/abs/2610.13328v1",
+      "topic": "MoE / 量化",
+      "summary": "区分 expert 的存储精度与 decode 读取精度，分别讨论放得下和每步读得快的约束。",
+      "limits": "历史研究摘要，未独立复现；原报告记录代码待 publication 后发布，当前可用性未重新核验。"
+    },
+    {
+      "title": "How DOCA GPUNetIO Unifies GPU-Initiated Networking Across the NVIDIA Software Stack",
+      "url": "https://developer.nvidia.com/blog/doca-gpunetio-gda-ki-unified-gpu-networking/",
+      "topic": "通信 / GPU networking",
+      "summary": "解释 CPU 建立网络控制对象、GPU kernel 提交和完成数据传输的分工，连接低层网络操作与 collectives。",
+      "limits": "历史研究摘要，未独立复现；机制支持不等于任意集群都能获得同样通信收益。"
+    }
+  ],
+  "practice": {
+    "title": "写一页 TTFT 归因检查表",
+    "duration": "约 90 分钟",
+    "requirements": "普通电脑、任意公开 serving benchmark 配置或请求记录样例；无需启动 GPU 服务。",
+    "steps": [
+      "列出 tokenization、queueing、prefix-cache hit、输入输出长度、warmup、CUDA graph、软件版本及 client / server 时间戳。",
+      "为每个字段注明观察位置、可能影响的指标和当前能否取得。",
+      "对高前缀复用与低前缀复用两种 workload，写出需要额外观测的阶段。"
+    ],
+    "deliverable": "一页指标、采集点、可比条件与归因限制对照表。",
+    "acceptance": "可以区分客户端 TTFT、服务端阶段区间与 GPU kernel 时间；没有测量证据的归因明确留空。"
+  },
+  "progress": []
+}

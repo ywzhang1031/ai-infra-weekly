@@ -1,0 +1,110 @@
+{
+  "date": "2026-11-09",
+  "title": "从请求排队到 GPU 通信重叠",
+  "summary": "本期先看 chunked prefill 的默认值怎样改变框架对比，再读 H200 上从 Prefill trace 到逐项补丁的过程，最后看训练 kernel 怎样按数据就绪切换计算与通信。",
+  "tags": [
+    "性能工程",
+    "推理框架",
+    "训练系统",
+    "底层优化"
+  ],
+  "window": {
+    "start": "2026-11-02",
+    "end": "2026-11-09"
+  },
+  "sourceHealth": "degraded",
+  "coverage": [
+    "观察窗口为 2026-11-02 至 2026-11-09（Asia/Shanghai，7 天）。论文按 arXiv v1 投稿日期（UTC）列出，博客按原文日期。所选条目在两种日期口径下均位于窗口内。",
+    "arXiv API 返回 180 条，仍在 7 天窗内。最新结果未过 collector 的 3 天时效阈值，触发 RSS 五类均为 0，再走 recent-list HTML，五类各取 20 条。列表公告日期和 v1 投稿日期分开核对。",
+    "collector 原始计数为 arXiv 280、RSS 39、HTML 16、GitHub Trending 3。时间过滤和 collector 去重后缓存 309 条（含 2 条告警）。再按无版本 arXiv ID、规范 URL 和标题去重，得 252 条发现记录（218 论文、19 RSS、12 HTML、3 Trending）。另有 1 条入选官方定向发现。全局 360 条 cap 未触发，逐源上限仍可能漏项。",
+    "缓存 RSS 为 Google Research 2、Microsoft Research 2、Hugging Face 8、NVIDIA 7、BAIR 0。HTML 为 vLLM 4、PyTorch 8（列表缺日期，保留为待核候选）、LMSYS 0。一次定向查询补到 LMSYS 原文，主域 canonical 返回 404，本期链接为已读的官方 staging 页面。BAIR 在窗口内为零，LMSYS 列表仍有解析缺口。",
+    "入选 3 篇重点和 5 条关注，所选 8 篇与已收录历史期刊无重复。GitHub Trending 的时间是采集时间，仅作发现线索。来源数字来自作者实验或模型，独立复现未进行。公开版保留原文链接，图表与公式可在对应原文中查看。"
+  ],
+  "highlights": [
+    {
+      "title": "A Controlled Experimental Evaluation of Configuration and Cache Architecture in LLM Serving Engines",
+      "url": "https://arxiv.org/abs/2611.05991",
+      "published": "2026-11-04",
+      "topic": "性能工程",
+      "summary": "同一模型在两个引擎默认配置下的 TTFT 差距，可能同时包含缓存、调度和容量差。作者将比较分成默认配置和匹配 chunked prefill 两臂，并检查差距随负载与测量窗口怎样变化。",
+      "limits": "预印本 §3–6：GKE，单张 NVIDIA L4 24 GB，各引擎单副本、关闭 autoscaling；Llama-3.1-8B-Instruct BF16，上下文 16,384，prefix caching 开启；vLLM 0.6.3 V0 与 SGLang 0.4.1。合成 trace 以相同 seed 成对复用，扫 DAG 到达率、prefix 共享比例、prompt 长度；共 99 runs、63,288 requests，每个成对工况各 3 个 seed。最大容量差工况在匹配后缩小 78%（按论文的对数比值口径）。0.28 DAG/s 工况匹配后的吞吐比为 1.046，TTFT p50 比仍为 12.3。等吞吐下两组工况仍有 p95 差异，最长前缀优先只是解释之一，attention backend、请求顺序、显存预算语义均未隔离。模型平均高估等待，DAG 的请求依赖会反馈到到达率。结论适用于本文旧版组合和合成 workload；作者公开日志与脚本，本站未运行。",
+      "mechanism": "vLLM 的默认臂整段 prefill，SGLang 已使用 2,048-token chunk。匹配臂只改变 vLLM 的生效配置，并用重新部署后设置不变的 SGLang 作内部对照。启动日志记录实际值，seed 使两端请求可配对。接近容量拐点时，用 offered/achieved throughput 区分间歇阻塞与持续积压，再用 §6.3 的流体近似解释延长观察窗口如何放大 p50 等待。",
+      "reading": "先看 §3.3–3.4 / Table 1 的生效配置，再看 §5 / Table 2 的负载矩阵，最后读 §6.2–6.4 / Figure 8 / Eq. (8) 与 §9。复查入口在 Appendix A 的 artifact，先看 README 中的 wlgen/、analysis/ 和原始日志。"
+    },
+    {
+      "title": "Optimizing DeepSeek-V4.1 on H200 with SGLang PD Disaggregation",
+      "url": "https://staging.lmsys.org/blog/2026-11-05-deepseek-v41-h200-pd-optimization/",
+      "published": "2026-11-05",
+      "topic": "推理框架",
+      "summary": "H200 的 1P1D 部署在 Prefill 侧出现排队。作者先对一次 forward 做归因，再针对 Indexer 形状、CP 尾部计算和 MoE 输出通信分别做补丁与测量。",
+      "limits": "第一方文章：8×H200、P 与 D 各 4 卡、Mooncake handoff，DeepSeek-V4.1-Flash。实验名义输入/输出 65,536/512 tokens，cache-hit 标签 50%/70%/90%，并发 4–32。确认 BF16 Indexer 路径，复跑示例还指定 Humming FP8 输入量化；逐个基线的完整精度与 checkpoint SHA 未从来源确认。四个 PR 对照报告各 3 轮、每轮 512 请求与 10 次预热，#47247 的复跑口径未从来源确认。#47406 的 70%/并发 8 工况，TTFT 4,301→2,294 ms，TPOT 2.07→2.53 ms/token，E2E 5,358→3,588 ms。各 PR 基线不同。历史组合的最高 E2E 降幅 63.9% 涉及 checkpoint 和 chunk 变化。原文未用这些数据证明吞吐增益或联合尾延迟 SLO。",
+      "mechanism": "将 Torch BF16 Indexer 的物理 score width 补齐到 64 的倍数，选择时裁回逻辑范围。CP + DSpark 的 eager Prefill 路径通过 tail-specific 元数据收集精简的 hidden 和辅助状态，保持全局 token 索引对齐。适用的 contiguous CP 路径改用 reduce-scatter，取消全输出复制。另有 candidate-only scoring 和 Triton epilogue fusion，后者保留测试路径上的 BF16 舍入。各改动分别影响计算量、搬运与同步。#47247 中局部 collective 的降幅明显大于慢 rank forward 和 E2E，且归约顺序改变，精度对齐仍需验证。",
+      "reading": "读 Background / Figure 2 与 Measurement Setup，随后读 §2 / Figure 6 和 §3，最后读 Performance Results 与 Reproduction。源码从原文链接的 SGLang PR #47406 进入，先看 eager CP runner 的 postprocess_cp_output hook，再看 DeepSeek 的 compact hidden / auxiliary states 收集。"
+    },
+    {
+      "title": "KOSMOS: Self-scheduling Persistent Kernels for Communication-Compute Overlap",
+      "url": "https://arxiv.org/abs/2611.07477",
+      "published": "2026-11-05",
+      "topic": "训练系统",
+      "summary": "TP+SP 与 EP 的通信和 GEMM 可以并发，但固定分工会留出空闲窗口。KOSMOS 把分工决策推进到 persistent kernel 内，按 tile 何时就绪来安排工作。",
+      "limits": "预印本 §4：单节点 8×MI350X 或 8×MI355X，XGMI 全连接。TP+SP 测 Llama 3 8B/70B/405B 形状、BF16/MXFP8、序列 8,192、TP8、GBS 64，比较 ROCm Transformer Engine 的 iteration time 和 TFLOPS/GPU；405B 仅 24 层。MoE 为 DeepSeek-V3 与 Qwen3-235B proxy，EP8、GBS16，对照 ROCm DeepEP，分别测均匀和偏斜路由。Table 3 报告 BF16 1.10–1.28×、MXFP8 1.10–1.25×。Table 4 中 MI355X/Qwen proxy/MXFP8 均匀路由为 1.83×，偏斜为 1.54×。端到端为每配置 3 次 × 20 iterations 后取中位数。proxy、单节点 XGMI、预分配容量和超容量回退限制外推。完整 KOSMOS 独立复现仓库未从来源确认，本文也未验证训练收敛。",
+      "mechanism": "每个 CU 常驻一个 workgroup（WG），以队列和 readiness flags 同步。AG 的 mover 传完后帮助算 GEMM，RS 的 builder 在计算队列耗尽后转做通信。MoE combine 的就绪任务间歇出现，允许每个 tile 后双向换工。队列按消费者需要的顺序产出，并要求等待只依赖更早被领取的 tile，避免循环等待。策略收益依赖形状和路由偏斜，AG 已被通信占满时换工空间很小；过大的偏斜回退到 Megatron 原实现。",
+      "reading": "从 §2.3 / Figure 4 的空闲窗口进入，读 §3.1 / Figure 1 的等待规则，再看 §3.2–3.3 的 AG、RS、MoE 角色差别。用 §4.2 / Table 2 对照固定分工消融，最后核对 §4.3–4.4 / Tables 3–4 的端到端配置。"
+    }
+  ],
+  "watch": [
+    {
+      "title": "Migrating vLLM to the LibTorch Stable ABI",
+      "url": "https://vllm.ai/blog/2026-11-06-stable-abi-cuda",
+      "published": "2026-11-06",
+      "topic": "推理框架",
+      "summary": "vLLM 将 CUDA 扩展迁到 LibTorch stable C shim 和 C++ 包装层。读 DeepGEMM case study，可看到怎样替换内部 ATen 调用、缩小二进制依赖面。",
+      "limits": "官方 v0.33.0 发布 Stable ABI CUDA wheels。文中用同一 vLLM 构建演示 PyTorch 2.14.1→2.15.0（均 cu132）；Python API、CUDA 和第三方依赖仍须校验。"
+    },
+    {
+      "title": "Introducing Kinference: An Open Source Inference Control Plane for vLLM and Kubernetes",
+      "url": "https://vllm.ai/blog/2026-11-04-introducing-kinference",
+      "published": "2026-11-04",
+      "topic": "推理框架",
+      "summary": "在 Kubernetes 的 vLLM 前面加 policy control plane，用 KV 前缀、队列和历史性能参与后端选择，另有 token rate limiting 与租户指标。适合阅读单实例之外的 SLO 路由。",
+      "limits": "官方对照使用 Kubernetes service 和所选 shared-prefix / multiturn workload；本期核验了发布文章和仓库入口，未复查各曲线的完整可复现配置。"
+    },
+    {
+      "title": "NUMA-Torch: Compiler-Driven NUMA-Aware LLM Prefill on Multi-Socket CPUs",
+      "url": "https://arxiv.org/abs/2611.07105",
+      "published": "2026-11-04",
+      "topic": "性能工程",
+      "summary": "把每个 CPU socket 当作一个 TP 分区。TorchInductor 的 post-grad FX pass 拆权重，Triton-CPU 路径同时约束内存分配和线程组亲和性。可对照进程级 NUMA 策略为何无法自动切分单个权重张量。",
+      "limits": "评估覆盖双路和四路 Xeon，基线也是 Triton-CPU。四路平台的短序列有退化，不能把较长序列的峰值收益外推到默认 OpenMP 后端。"
+    },
+    {
+      "title": "Should You Split Decode? Disaggregation Across Future Models and Accelerators",
+      "url": "https://arxiv.org/abs/2611.08299",
+      "published": "2026-11-05",
+      "topic": "推理框架",
+      "summary": "SiliconForge 分开改变 serving 切分边界和硬件映射。在同功耗预算下分别优化 P/D 与 P/D+AFD，比较带 TTFT/TPOT 约束的 goodput/kW。适合检查通信、池规模和放置粒度怎样抵消局部收益。",
+      "limits": "主结论来自带校准的前瞻模型及敏感性分析，所设硬件、模型及 fabric 场景不等同于集群实测。"
+    },
+    {
+      "title": "Scheduling Data to Compute: Hierarchical Data Pipelining for LLM Training on AMD GPUs",
+      "url": "https://arxiv.org/abs/2611.05751",
+      "published": "2026-11-03",
+      "topic": "训练系统",
+      "summary": "把数据搬运分成 HBM→LDS 的 TDM、LDS→寄存器的 transpose load，以及 GPU 间 SDMA。Table 13 用同 shape 的单独 GEMM 作基线，直接量化 collective overlap 对计算的干扰。",
+      "limits": "片内测试为 MI455 bring-up 平台，卡间测试用 MI355。原文 Table 13 中 AllGather 并发下的 GEMM runtime 增幅几何均值，CU 路径为 28%，SDMA 路径为 8%。该数字对应表中 shape，不是端到端训练提速。"
+    }
+  ],
+  "practice": {
+    "title": "离线重放一条到达序列，测量窗口怎样放大排队",
+    "duration": "约 90 分钟",
+    "requirements": "任意 CPU、Python 3 标准库或电子表格。输入为确定性的每秒 10 次等间距到达、两个固定服务率（10.2 和 9.56 req/s）、300 s 与 1,200 s 到达窗口。另设 9 req/s 到达的低负载对照。无需 GPU 或服务。",
+    "steps": [
+      "读对照论文 §6.3 / Eq. (8)，先写下预测。服务率 9.56 req/s 在 10 req/s 到达时产生积压。按两档到达窗口各生成一条轨迹，两种服务率复用完全相同的到达时间。",
+      "用 FIFO 单服务台逐请求记 arrival、start 和 finish。统计 start−arrival 的 p50/p95、窗口内完成率与窗口结束时未完成数，再排空以计算全体已到达请求的等待分布。保留低负载对照。",
+      "输出对照表，把窗口内吞吐和排空后的分位数分栏。用同一套单位核对流体近似，解释如果只保留窗口内已完成请求，为什么尾部会少算。"
+    ],
+    "deliverable": "一份脚本或表格、一份逐请求 CSV 和一页结果说明，列出到达窗口、实际完成吞吐与 p50/p95 等待。",
+    "acceptance": "低负载和 10.2 req/s 对照不积压。9.56 req/s 组的 p50 等待约为 6.9 s 和 27.6 s，两档均与近似差小于 0.25 s，且窗口末尾有未完成请求。说明哪些真实框架现象（batching、混合长度与 DAG 反馈）超出该离线模型。"
+  },
+  "progress": []
+}
