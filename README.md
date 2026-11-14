@@ -26,6 +26,7 @@ npm run preview
 - `config/sources.json`：公开来源清单；不会从安装者机器读取私有文件。
 - `build.mjs`、`web/`：生成归档、独立期刊、订阅页、RSS 和 sitemap。
 - `publish.mjs`：发布到 Cloudflare 并核对生产内容哈希。
+- `scripts/release.mjs`：重新核验生产与源码后发布 GitHub Release，重复执行不会重复创建。
 - `docs/`：编辑与发布流程。
 
 原始私人报告、采集缓存、学习记录、工作台、订阅者邮箱和凭据不属于本仓库。Cloudflare 只上传生成的 `dist/`。公开稿中的 `progress` 保持空数组。
@@ -41,6 +42,8 @@ npm run deploy -- --expected-week YYYY-MM-DD
 ```
 
 只有新的 `publication-state.json` 中 `latestWeek`、`checkedAt` 和所有 `checks` 成功，才算上线。失败记录在 `publication-last-error.json`；旧成功记录不代表本次完成。部署成功但网络验收中断时使用 `--verify-only` 继续验收，避免重复部署。
+
+发布后按 [每周发布流程](docs/weekly-publishing.md) 同步公开源码并创建对应 GitHub Release。邮件是否启用由独立服务配置决定；本站不自动发送邮件。
 
 ## 部署自己的站点
 

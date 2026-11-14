@@ -15,4 +15,5 @@ jobs:
           node-version: '22'
           cache: npm
       - run: npm ci --ignore-scripts --no-audit --no-fund
+      - run: node --check scripts/release.mjs
       - run: npm run check
