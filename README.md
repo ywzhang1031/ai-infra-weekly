@@ -5,6 +5,7 @@
 - [阅读周刊](https://evan-ai-infra-weekly.evan-ai-infra-weekly.workers.dev/)
 - [订阅入口](https://evan-ai-infra-weekly.evan-ai-infra-weekly.workers.dev/subscribe/)
 - [RSS](https://evan-ai-infra-weekly.evan-ai-infra-weekly.workers.dev/feed.xml)
+- [GitHub Releases](https://github.com/ywzhang1031/ai-infra-weekly/releases)：Watch → Custom → Releases
 - [编辑流程](docs/editorial-policy.md) · [贡献指南](CONTRIBUTING.md)
 
 ## 本地运行
