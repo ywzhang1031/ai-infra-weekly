@@ -1,0 +1,110 @@
+{
+  "date": "2026-11-16",
+  "title": "双机推理的容量拐点与 MoE 通信开销",
+  "summary": "从双机 vLLM 的并发曲线读起，再看 MoE 的单边写入如何减少小批量同步开销，以及训练中的分片与权重布局如何影响通信、显存和更新。",
+  "tags": [
+    "性能工程",
+    "推理框架",
+    "训练系统",
+    "底层优化"
+  ],
+  "window": {
+    "start": "2026-11-09",
+    "end": "2026-11-16"
+  },
+  "sourceHealth": "degraded",
+  "coverage": [
+    "观察窗口为 2026-11-09 至 2026-11-16（Asia/Shanghai，7 天，未扩窗）。论文日期取 arXiv v1 提交日（UTC），博客用原文署名日期。入选条目在观察窗内。",
+    "arXiv API 返回 180 条窗内记录，最新为 11-12 18:59 UTC，超过采集器的 3 天时效阈值。五类 RSS 回退均为零，recent-list HTML 四类各取 20 条，cs.DC 因 TLS EOF 缺失；其他类别保留部分交叉投稿。",
+    "采集器原始计数为 arXiv 260、RSS 28、HTML 16、GitHub Trending 8。缓存共 289 条（含 4 条告警）。再按无版本 arXiv ID、规范 URL 与标题去重后为 233 条发现记录（204 论文、10 RSS、11 HTML、8 Trending），另有 1 条定向发现。全局 360 条上限未触发，逐源 cap 仍限制覆盖。Trending 日期只代表采集。",
+    "窗内缓存 RSS 为 Google Research 3、Microsoft Research 2、Hugging Face 0（TLS EOF）、BAIR 1、NVIDIA 4。HTML 候选为 vLLM 3、PyTorch 8（列表未提供日期）、LMSYS 0。对 LMSYS 做一次定向补查，读到 Neuron 后端首发原文，列表解析缺口仍在。",
+    "本期 3 篇重点、5 条关注均与历史期刊核对去重。两篇重点预印本的独立复跑 artifact 入口未从来源确认。实验数据来自作者，本站未独立复现。"
+  ],
+  "highlights": [
+    {
+      "title": "When One GPU Isn’t Enough: Serving GLM-5.3 Across Two NVIDIA DGX Stations with vLLM",
+      "url": "https://developer.nvidia.com/blog/when-one-gpu-isnt-enough-serving-glm-5-3-across-two-nvidia-dgx-stations-with-vllm/",
+      "published": "2026-11-13",
+      "topic": "性能工程",
+      "summary": "用两台 DGX Station 承载单卡装不下的 GLM-5.3。并发扫描展示了一个常见的容量诊断问题：同一部署在 C16 达到本次扫描的最高吞吐，继续增加并发后吞吐下滑，平均延迟明显增加。",
+      "mechanism": "两台主机各一张 GB300，vLLM 用 TP=2 分片，rank 0 提供 API，rank 1 运行无 API 的 worker。两 rank 经指定 ConnectX-8 RoCE rail 执行 NCCL 通信。先核对 GPU Direct RDMA、HCA 和每卡已加载权重，再测业务请求，以便把连通性、传输路径和请求性能分开检查。容量换来每步跨主机同步，两 rank 都必须参与。",
+      "limits": "第一方教程，vLLM 0.30.0、NCCL 2.30.7、GLM-5.3 NVFP4、FP8 KV、4 个 MTP 草稿 token、prefix caching 开启。AIPerf 0.12.0 用 SPEED-Bench Coding 的 80 段对话，在 C1/8/16/32 各预热 3C、测 10C，输出上限 8,192 token，reasoning effort 为 max，统计包含推理 token。Table 2 中 C16→C32 的总输出吞吐为 607.8→385.0 token/s，均值 TTFT 为 482.90→899.36 ms，请求均值为 136.46→453.54 s。C32 同时改了服务端 max_num_seqs 并重启，较高并发还会重复部分输入。组间 p95、独立重复、关闭缓存或 MTP 的配对对照、NCCL/KV/调度的分段归因均未从来源确认。单卡容量约束使单卡延迟基线缺失。",
+      "reading": "先看 Step 3 的 TP、NCCL 和模型参数，再看 Step 4 的 rank 与 RDMA 检查，最后看 Step 5 的复现命令、Figure 2 与 Table 2。记下客户端并发、服务端并发上限和 warmup 三个变量。"
+    },
+    {
+      "title": "One-Sided Expert-Parallel All-to-All for Mixture-of-Experts Inference over NVLink",
+      "url": "https://arxiv.org/abs/2611.13188v1",
+      "published": "2026-11-09",
+      "topic": "推理框架",
+      "summary": "MoE 每层要分发 token 并合并专家结果。小 decode batch 里，同步和元数据的固定开销会占主要时间。论文用单侧写入和 rank-major 缓冲区缩短这段关键路径。",
+      "mechanism": "源 rank 按目的 rank 写远端缓冲区，一个 token 路由到同一 rank 上多个专家时只发一份。目的 rank 的 grouped GEMM 直接读取 rank-major workspace，合并前先在目的 rank 内归并本地专家结果。Fence 用原子计数、系统级栅栏和完成旗标，适合更大的传输；Sentinel 用固定槽位逐字轮询，接收端确认写入完成后搬出并复位槽位。它省下统一的完成旗标链，同时增加槽位初始化、轮询与复位开销。",
+      "limits": "预印本 §5 用 8×B300 单 NVLink 域测试 DeepSeek-V4.1-Flash 与 Kimi-K3 的 routed-expert layer，从 1 到 4,096 tokens/rank，以均匀路由为主并另做 Zipf 路由扫点。层实验使用 MXFP4 权重、MXFP8 激活、BF16 combine。DeepSeek-V4.1-Flash 在 1 token/rank 的通信往返为 Sentinel 17.4、Fence 27.6、DeepEP V2.5 47.9 μs。Table 4 中，同层在 128 tokens/rank 下 Sentinel 183.3、MegaMoE 188.7 μs，256 时变为 206.5、194.1 μs。层对照还含 DeepEP + DeepGEMM，计算后端有差异。另测 GB200 NVL72，证据依然限定在单 NVLink 域和层级指标，跨机 RDMA、线上请求尾延迟和可直接复跑的独立源码入口未从来源确认。",
+      "reading": "按 §3.1–3.3 / Figure 2 核对 dispatch、grouped GEMM、combine，再读 §4 / Algorithms 1–2 / Figure 4，最后对照 §5.2–5.3 / Figure 6 / Tables 4–5。"
+    },
+    {
+      "title": "SS-HSDP: Efficient and Flexible Sharded Data Parallelism via Runtime–Update Decoupling",
+      "url": "https://arxiv.org/abs/2611.16467v1",
+      "published": "2026-11-12",
+      "topic": "训练系统",
+      "summary": "训练 kernel 希望把投影、权重和梯度排成适合 GEMM 的布局，Muon 等优化器则要求按完整矩阵或 attention head 更新。SS-HSDP 用共享存储视图和分片映射同时表示两种布局。",
+      "mechanism": "data tree 记录同一存储上的张量视图，shard chain 记录各层级片段。运行权重、梯度累积与优化器状态可落在不同大小的嵌套分片组，外层 ZeRO-1 只在每个优化器步发生外层通信，避免扩大反复 weight all-gather 的范围。保留量化权重跨 microbatch 复用会多占常驻空间。直接写梯度要求每次缓冲区生命周期的首写覆盖每个元素，后续才可累加。",
+      "limits": "预印本 §5 / Appendix B.1 在 32/64/128 GPU（8 卡/节点）用固定单卡合成负载、AdamW、每步 4 个 microbatch、全激活重算，测试两个内部视频模型、Qwen3-30B-A3B 和 12 层 MiMo。专家 GEMM（内部 Dense 为 video FFN）用 MXFP8，其余 GEMM 用 BF16，优化器状态 FP32。对照 FSDP2、作者复现的 veScale-FSDP、Megatron-FSDP。128 卡 MiMo 的 MFU 相对最快基线高 21.7%，峰值 125.0 GiB。主实验采用 2 步预热及 6 步中位数，具体 GPU SKU 未从主实验配置确认。另一个 64×B200、BF16 MiMo 扫描中，ZeroSM 相对 SM-based SS-HSDP 在最小负载吞吐低 33.5%、最大负载高 8.8%，两臂也改变梯度存储与归约路径。完整 artifact 入口未从来源确认。",
+      "reading": "先读 §2.2 / Figure 2 的 FSDP2 张量搬运，再读 §3 / Figure 4 的 runtime/update 分工，最后读 §6.2 / Figure 8 与 Appendix A Table 4、B.1/B.3，逐项核对复制、同步和正确性条件。"
+    }
+  ],
+  "watch": [
+    {
+      "title": "SGLang-Neuron v0.1.0: SGLang's Serving Stack on AWS Trainium",
+      "url": "https://www.lmsys.org/blog/2026-11-12-sglang-neuron-v0.1.0",
+      "published": "2026-11-12",
+      "topic": "推理框架",
+      "summary": "SGLang 核心负责 scheduler、radix cache 和 P/D 协议，Neuron 插件提供 NKI kernel、按 shape bucket 编译的 graph runner 与设备 KV 池。先读异步运行时的双流 I/O，再看 Kimi-K3 经 NIXL/EFA 的跨节点 KV handoff。",
+      "limits": "官方公开预览。Kimi-K3 在 3 台 Trainium3 上用 FP8 MLA 和 MXFP4 experts，作者报告满 slots 的混合 4K–1M 输入为 67 token/s/user。匹配基线、长度分布、尾延迟和独立复测未从来源确认。"
+    },
+    {
+      "title": "LLMRunner: Closed Workload Model Performance Testing Framework for LLM Servings",
+      "url": "https://arxiv.org/abs/2611.15372v1",
+      "published": "2026-11-11",
+      "topic": "性能工程",
+      "summary": "把带 think time 的闭环多轮会话与 open-loop Poisson 到达分开，按实验矩阵归档配置、逐请求延迟、GPU 时间序列与 KV 占用。优先读 §III 的负载编排和 §IV 的成对 allocator 对照。",
+      "limits": "预印本使用单张 A40 48 GB、Qwen3-0.6B 和修改后的 vLLM，90% GPU 内存配置，工作集留在 GPU DRAM 内，对照 cudaMalloc 与 cudaMallocManaged。结论仅覆盖该未超配条件。"
+    },
+    {
+      "title": "DeepSeek-V4.1-Flash on Vera Rubin NVL72: 58x Throughput vs. GB300 NVL72 at 387 tokens/s",
+      "url": "https://vllm.ai/blog/2026-11-12-deepseek-v41-flash-vera-rubin",
+      "published": "2026-11-12",
+      "topic": "性能工程",
+      "summary": "vLLM 在 Vera Rubin NVL72 把带宽敏感的数据放回所属 SM 的内存域，调整 FP8×FP4 MMA，并在 AgentX token 上用 vllm bench forward 做模型前向与 kernel 对照。阅读重点是 kernel 实测与服务结果之间的证据边界。",
+      "limits": "Figure 1 的总 tokens/GPU/s 计入已缓存输入、未缓存输入和输出。标题倍率还包含整套分离部署、路由和硬件变化，文章未提供逐硬件单变量归因。"
+    },
+    {
+      "title": "Training a 1T-Parameter MoE on EU public infrastructure with PyTorch and TorchTitan",
+      "url": "https://pytorch.org/blog/training-a-1t-parameter-moe-on-eu-public-infrastructure-with-pytorch-and-torchtitan/",
+      "published": "2026-11-12",
+      "topic": "训练系统",
+      "summary": "EUROPA 在 JUPITER 用 384-way FSDP、节点内 EP4，将 MoE all-to-all 留在 NVLink。FlexShard 让一个 rank 持有完整专家矩阵，CPU offload 保留参数的同时把 Newton–Schulz 移回 GPU。适合对照阅读 Figure 3 的 step trace。",
+      "limits": "作者报告每个 DP replica 用 384 张 GH200，训练吞吐从约 90 到 1,300 token/s/GPU 属于累计改动。Optimizer step 单项对照从 41.7 到 2.2 秒；外推到其它拓扑的证据未从来源确认。"
+    },
+    {
+      "title": "Fast by Default: Compile-Time Heuristics for Helion Kernels",
+      "url": "https://pytorch.org/blog/fast-by-default-compile-time-heuristics-for-helion-kernels/",
+      "published": "2026-11-12",
+      "topic": "底层优化",
+      "summary": "编译期从 IR 和数据流识别 matmul、reduction 或 pointwise，再为 tile、warp 数和 pipeline stages 选默认值。适合用作寄存器压力、CTA 驻留和访存合并之间的案例。",
+      "limits": "第一方 H100 微基准中，六个 vLLM reduction kernel 的测试集合相对手写 CUDA 聚合值为 1.27×，完整 autotune 为 1.31×；没有对应 vLLM 服务端吞吐/尾延迟对照。"
+    }
+  ],
+  "practice": {
+    "title": "在 CPU 上核对 MoE 发包去重与 rank 负载",
+    "duration": "约 90 分钟",
+    "requirements": "任意 CPU 和 Python 3 标准库。用 4 个 rank、8 个常驻专家（每 rank 2 个）、top-2、64 条可重复的合成 token，准备均衡及偏斜各一张路由表。无需 GPU 或服务。",
+    "steps": [
+      "先读 NVLinkOneSided §3.1–3.3 与 Table 5。手写 3 个 token，覆盖两个专家同为远端同一 rank、分居两个远端 rank，以及含本地专家的情况。",
+      "逐 token 对比逐专家发送与按目的 rank 发送。用 (token_id, source_rank, destination_rank) 作为缓冲区键，统计远端 payload 数与每 rank 的 token–expert 对数；用 Fraction 和确定的整数专家函数生成两种路径的加权输出。",
+      "用同一份路由表对两个路径逐 token 复核；输出两种分布下每 rank 的远端入站 payload 数、专家计算对数及两者的峰值，给出后续 GPU trace 需要验证的一个假设。"
+    ],
+    "deliverable": "一个 CPU 脚本、两组逐 rank 计数及一页对比说明。说明每个计数的单位与典型单 token 路径。",
+    "acceptance": "两路径的加权输出逐 token 完全一致，专家计算对数守恒。发往同一远端 rank 的两位专家由两份 payload 减为一份，发往两个远端 rank 时仍为两份。偏斜例中能用计数解释哪个 rank 收到更多 payload、哪个 rank 执行更多专家计算。CPU 结果只验证数据流与计数。"
+  },
+  "progress": []
+}
