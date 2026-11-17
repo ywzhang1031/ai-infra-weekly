@@ -2,6 +2,8 @@
   "title": "AI Infra Weekly",
   "baseUrl": "https://evan-ai-infra-weekly.evan-ai-infra-weekly.workers.dev",
   "subscriptions": {
-    "githubUrl": "https://github.com/ywzhang1031/ai-infra-weekly"
+    "githubUrl": "https://github.com/ywzhang1031/ai-infra-weekly",
+    "buttondownUrl": "https://buttondown.com/ai-infra-weekly",
+    "buttondownStatus": "pending_review"
   }
 }
