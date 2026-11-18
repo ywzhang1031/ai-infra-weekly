@@ -14,16 +14,16 @@ RSS 包含标题、摘要和网页链接。浏览器直接打开 XML 不等于�
 {
   "subscriptions": {
     "buttondownUrl": "https://buttondown.com/ai-infra-weekly",
-    "buttondownStatus": "pending_review"
+    "buttondownStatus": "active"
   }
 }
 ```
 
 使用时请保留已有 `title`、`baseUrl` 和其他订阅配置。占位地址不能进入生产；没有 `buttondownUrl` 时，站点不显示邮件按钮，也不收集邮箱。`buttondownStatus` 仅允许 `pending_review` 或 `active`，省略时兼容既有配置，按 `active` 展示。
 
-2026-11-18 已在登录账号中核对 newsletter 名称为 AI Infra Weekly，并保存 username `ai-infra-weekly`。平台要求先提供公开网站上的链接再审核；匿名访问真实订阅页当前返回 404，因此使用 `pending_review`。网站明确显示“邮件订阅审核中”，不宣称订阅或发信已开放。
+2026-11-18 已核验 AI Infra Weekly 审核通过：官方批准通知之后没有更新的暂停或拒绝通知，刷新登录后台后不再显示审核或暂停限制，匿名访问真实订阅页返回 HTTP 200，名称及邮箱订阅表单均正确。因此将入口切换为 `active`。此前审核期间的 404 已解除。
 
-只有确认账号已获 Buttondown 批准、匿名访问订阅页返回 HTTP 200 且显示属于 AI Infra Weekly 的订阅表单后，才将状态切换为 `active` 并重新验证发布。页面开通与邮件自动发送分别验收；自动发送仍需所有者另行授权。
+后续恢复入口时，同样须确认账号已获 Buttondown 批准、后台没有审核或暂停限制，且匿名访问订阅页返回 HTTP 200 并显示属于 AI Infra Weekly 的订阅表单，再使用 `active` 并验证发布。页面开通与邮件发送分别验收：当前只开放登记入口，后续内容由编辑审核发布；未购买套餐、未启用自动发送，既有邮件仍为草稿。未提交测试邮箱或触发测试邮件，因此真实确认与收信链路尚未验证。
 
 本网站只链接到 Buttondown 的官方订阅页，不存储邮箱或邮件 API token。订阅确认、退订与发信由 Buttondown 管理；本地按钮不会伪造成功状态。
 
