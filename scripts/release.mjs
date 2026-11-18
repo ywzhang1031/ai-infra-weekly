@@ -113,7 +113,7 @@ function verifyProduction(config, expectedWeek, dates) {
   const state = readJson('publication-state.json', 'Publication state');
   requireCheck(state.status === 'published' && state.latestWeek === expectedWeek && state.url === base, 'Publication state does not confirm this site and issue. Complete production deployment and verification first.');
   requireCheck(typeof state.checkedAt === 'string' && Number.isFinite(Date.parse(state.checkedAt)), 'Publication state has no valid verification timestamp.');
-  const required = new Set(['/', '/subscribe/', '/site.css', '/site.js', '/favicon.svg', '/feed.xml', '/sitemap.xml', ...dates.map(date => `/weeks/${date}/`)]);
+  const required = new Set(['/', '/subscribe/', '/latest/', '/site.css', '/site.js', '/favicon.svg', '/feed.xml', '/sitemap.xml', ...dates.map(date => `/weeks/${date}/`)]);
   requireCheck(Array.isArray(state.checks) && state.checks.length === required.size, 'Publication state does not contain the complete expected route set.');
   const seen = new Set();
   for (const check of state.checks) {

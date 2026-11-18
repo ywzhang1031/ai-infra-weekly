@@ -47,7 +47,7 @@ try {
     version = output.match(/Current Version ID: ([a-f0-9-]+)/)?.[1] || null;
   }
   if (!deployed) throw new Error('Deployment URL missing from Wrangler output; verify deployment before retrying.');
-  const checks = ['/', '/subscribe/', '/site.css', '/site.js', '/favicon.svg', ...weeks.map(w=>`/weeks/${w.slice(0,10)}/`)];
+  const checks = ['/', '/subscribe/', '/latest/', '/site.css', '/site.js', '/favicon.svg', ...weeks.map(w=>`/weeks/${w.slice(0,10)}/`)];
   if (config.baseUrl) checks.push('/feed.xml', '/sitemap.xml');
   const verified = [];
   for (const route of checks) {

@@ -23,12 +23,13 @@ const issues = readdirSync(join(root, 'content'))
   .filter(file => /^\d{4}-\d{2}-\d{2}\.json$/.test(file))
   .map(file => JSON.parse(read(`content/${file}`)));
 const issueDates = new Set(issues.map(issue => issue.date));
+const latestDate = [...issueDates].sort().at(-1);
 requireCheck(issueDates.size === issues.length, 'Public content contains duplicate issue dates.');
 requireCheck(issues.every(issue => Array.isArray(issue.progress) && issue.progress.length === 0), 'Public issues must keep progress=[].');
 
 const expected = new Set([
   'index.html', '404.html', 'site.css', 'site.js', 'favicon.svg', 'feed.xml',
-  'sitemap.xml', 'robots.txt', '_headers', 'subscribe/index.html',
+  'sitemap.xml', 'robots.txt', '_headers', 'subscribe/index.html', 'latest/index.html',
   ...issues.map(issue => `weeks/${issue.date}/index.html`),
 ]);
 const generated = new Map();
@@ -51,6 +52,7 @@ function scan(directory = '') {
 }
 scan();
 for (const file of expected) requireCheck(generated.has(file), `Missing generated file: ${file}`);
+requireCheck(generated.get('latest/index.html') === generated.get(`weeks/${latestDate}/index.html`), 'Latest reading entry must match the newest public issue.');
 
 const privatePatterns = [
   ['private local path or profile', /(?:\/Users\/|\/home\/|[A-Z]:\\Users\\|teacher\/|learner_profile|career_target|memory\.md)/i],
@@ -126,7 +128,8 @@ for (const [file, text] of html) {
   if (file !== '404.html') {
     const canonicals = [...text.matchAll(/<link\b[^>]*>/gi)].map(([tag]) => attributes(tag))
       .filter(attr => attr.rel?.split(/\s+/).includes('canonical'));
-    requireCheck(canonicals.length === 1 && canonicals[0].href === new URL(pagePath(file), base).href, `${file}: canonical URL mismatch.`);
+    const canonicalPath = file === 'latest/index.html' ? `/weeks/${latestDate}/` : pagePath(file);
+    requireCheck(canonicals.length === 1 && canonicals[0].href === new URL(canonicalPath, base).href, `${file}: canonical URL mismatch.`);
   }
 }
 
