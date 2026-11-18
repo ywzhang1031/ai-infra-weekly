@@ -3,6 +3,7 @@ import { readFile, writeFile, mkdir, readdir, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import { prepareEmailDraft } from './scripts/email-draft.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const statePath = path.join(root, 'publication-state.json');
@@ -15,6 +16,8 @@ const verifyOnly = args.includes('--verify-only');
 const digest = body => createHash('sha256').update(body).digest('hex');
 let deployed = null;
 let version = null;
+let publicationVerified = false;
+let verifiedInputSha256 = null;
 const run = args => {
   const result = spawnSync(process.execPath, args, {
     cwd:root, encoding:'utf8', maxBuffer:10*1024*1024,
@@ -28,7 +31,10 @@ try {
   if (!expectedWeek || !/^\d{4}-\d{2}-\d{2}$/.test(expectedWeek)) throw new Error('Pass --expected-week YYYY-MM-DD; missing current content must not publish an older issue.');
   const weeks = (await readdir(path.join(root,'content'))).filter(x=>/^\d{4}-\d{2}-\d{2}\.json$/.test(x)).sort().reverse();
   if (weeks[0] !== `${expectedWeek}.json`) throw new Error(`Latest public issue does not match expected week ${expectedWeek}`);
+  const inputPath = path.join(root, 'content', `${expectedWeek}.json`);
+  verifiedInputSha256 = digest(await readFile(inputPath));
   run(['scripts/check.mjs']);
+  if (digest(await readFile(inputPath)) !== verifiedInputSha256) throw new Error('Public issue changed during the build; start from a stable reviewed input.');
   if (verifyOnly) {
     deployed = config.baseUrl;
     // Preserve the version returned by the deployment being resumed, when available.
@@ -60,9 +66,26 @@ try {
   }
   await writeFile(statePath, JSON.stringify({status:'published',checkedAt:new Date().toISOString(),url:deployed,version,latestWeek:expectedWeek,checks:verified},null,2)+'\n');
   await rm(path.join(root, 'publication-last-error.json'), {force:true});
+  publicationVerified = true;
   console.log(`Verified public site: ${deployed}`);
 } catch(error) {
   console.error(`Publication not verified: ${error.message}`);
   await writeFile(path.join(root,'publication-last-error.json'),JSON.stringify({status:'failed',attemptedAt:new Date().toISOString(),url:deployed,version,expectedWeek,message:error.message},null,2)+'\n');
   process.exitCode=1;
+}
+
+// A draft failure must not turn a verified website deployment into a publication failure.
+if (publicationVerified) {
+  const directory = path.join(root, '.local-maintenance', 'newsletters', expectedWeek);
+  try {
+    const result = prepareEmailDraft({ root, expectedWeek, productionVerified: true, verifiedInputSha256 });
+    await rm(path.join(directory, 'generation-error.json'), { force: true });
+    console.log(`Email draft ${result.reused ? 'reused' : 'prepared'}: ${result.manifestPath}; remote=${result.manifest.remote.status}; no email sent.`);
+  } catch (error) {
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, 'generation-error.json'), JSON.stringify({
+      status: 'pending', week: expectedWeek, attemptedAt: new Date().toISOString(), message: error.message,
+    }, null, 2) + '\n');
+    console.error(`Website verified; email draft pending: ${error.message}`);
+  }
 }

@@ -9,7 +9,9 @@
     "deploy": "node publish.mjs",
     "deploy:dry-run": "npm run build && wrangler deploy --dry-run",
     "check": "node scripts/check.mjs",
-    "release": "node scripts/release.mjs"
+    "release": "node scripts/release.mjs",
+    "email:draft": "node scripts/email-draft.mjs",
+    "test:email-draft": "node --test scripts/email-draft.test.mjs"
   },
   "devDependencies": {
     "wrangler": "4.128.0"
