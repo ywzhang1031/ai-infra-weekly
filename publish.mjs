@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { prepareEmailDraft } from './scripts/email-draft.mjs';
+import { readProduction } from './scripts/production-read.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const statePath = path.join(root, 'publication-state.json');
@@ -57,10 +58,9 @@ try {
   if (config.baseUrl) checks.push('/feed.xml', '/sitemap.xml');
   const verified = [];
   for (const route of checks) {
-    const response = spawnSync('curl', ['--fail','--silent','--show-error','--max-time','20',deployed+route], {maxBuffer:10*1024*1024});
-    if (response.status !== 0) throw new Error(`Production check failed: ${route}: ${String(response.stderr).trim()}`);
+    const body = readProduction(deployed + route);
     const local = await readFile(path.join(root,'dist',route.endsWith('/') ? route+'index.html' : route));
-    const sha256 = digest(response.stdout);
+    const sha256 = digest(body);
     if (sha256 !== digest(local)) throw new Error(`Production content hash mismatch: ${route}`);
     verified.push({path:route,matched:true,sha256});
   }

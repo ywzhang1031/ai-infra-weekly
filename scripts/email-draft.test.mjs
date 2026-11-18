@@ -141,11 +141,13 @@ test('verified publication stays published when preparing the email fails', () =
   json(join(root, 'site-config.json'), config);
   writeFileSync(join(root, 'publish.mjs'), readFileSync(new URL('../publish.mjs', import.meta.url)));
   writeFileSync(join(root, 'scripts/email-draft.mjs'), readFileSync(new URL('./email-draft.mjs', import.meta.url)));
+  writeFileSync(join(root, 'scripts/production-read.mjs'), readFileSync(new URL('./production-read.mjs', import.meta.url)));
   mkdirSync(join(root, 'bin'));
   writeFileSync(join(root, 'bin/curl'), `#!${process.execPath}
 const fs=require('node:fs');
 const route=new URL(process.argv.at(-1)).pathname;
 process.stdout.write(fs.readFileSync('dist/'+(route.endsWith('/')?route.slice(1)+'index.html':route.slice(1))));
+process.stdout.write('\\n__INFRA_PRODUCTION_READ__\\t200\\t0.0001\\t0.0003\\t0.9\\t1.0\\t1.1\\t0\\n');
 `, { mode: 0o755 });
   const result = spawnSync(process.execPath, ['publish.mjs', '--expected-week', week, '--verify-only'], {
     cwd: root, encoding: 'utf8', env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}` }, timeout: 15_000,
@@ -156,4 +158,37 @@ process.stdout.write(fs.readFileSync('dist/'+(route.endsWith('/')?route.slice(1)
   const error = JSON.parse(readFileSync(join(root, '.local-maintenance/newsletters', week, 'generation-error.json')));
   assert.equal(error.status, 'pending');
   assert.match(error.message, /active, verified Buttondown/);
+});
+
+test('two TLS timeouts preserve the successful publication receipt and create no email draft', () => {
+  const { root } = fixture();
+  const receiptPath = join(root, 'publication-state.json');
+  const previousReceipt = readFileSync(receiptPath);
+  writeFileSync(join(root, 'publish.mjs'), readFileSync(new URL('../publish.mjs', import.meta.url)));
+  writeFileSync(join(root, 'scripts/email-draft.mjs'), readFileSync(new URL('./email-draft.mjs', import.meta.url)));
+  writeFileSync(join(root, 'scripts/production-read.mjs'), readFileSync(new URL('./production-read.mjs', import.meta.url)));
+  mkdirSync(join(root, 'bin'));
+  writeFileSync(join(root, 'bin/curl'), `#!${process.execPath}
+const fs=require('node:fs');
+fs.appendFileSync('curl-attempts.txt','attempt\\n');
+process.stdout.write('partial response\\n__INFRA_PRODUCTION_READ__\\t000\\t0.0001\\t0.000293\\t0\\t0\\t5.006781\\t1\\n');
+process.exitCode=28;
+`, { mode: 0o755 });
+  const result = spawnSync(process.execPath, ['publish.mjs', '--expected-week', week, '--verify-only'], {
+    cwd: root, encoding: 'utf8', env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}` }, timeout: 15_000,
+  });
+  assert.equal(result.status, 1, result.stderr);
+  assert.equal(readFileSync(join(root, 'curl-attempts.txt'), 'utf8'), 'attempt\nattempt\n');
+  assert.deepEqual(readFileSync(receiptPath), previousReceipt, 'Keep the last successful receipt byte for byte');
+  const directory = join(root, '.local-maintenance/newsletters', week);
+  assert.equal(existsSync(join(directory, 'manifest.json')), false);
+  assert.equal(existsSync(join(directory, 'draft.md')), false);
+  assert.equal(existsSync(directory), false, 'Do not enter email generation after failed verification');
+  const error = JSON.parse(readFileSync(join(root, 'publication-last-error.json')));
+  assert.equal(error.status, 'failed');
+  assert.equal(error.expectedWeek, week);
+  assert.equal(error.version, 'test-version');
+  assert.match(error.message, /after 2 attempt\(s\)/);
+  assert.match(error.message, /attempt=1, phase=tls_handshake, curl_exit=28/);
+  assert.match(error.message, /attempt=2, phase=tls_handshake, curl_exit=28/);
 });

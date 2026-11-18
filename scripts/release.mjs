@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { readFileSync, readdirSync, lstatSync, mkdirSync, mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readProduction } from './production-read.mjs';
 
 // This command never stages, pushes, changes credentials, or sends email.
 // --dry-run performs the same reads and check.mjs build, but writes no remote state.
@@ -124,10 +125,8 @@ function verifyProduction(config, expectedWeek, dates) {
     requireCheck(stat.isFile() && !stat.isSymbolicLink() && stat.size <= 2 * 1024 * 1024, `Generated artifact is invalid: ${check.path}`);
     const localHash = sha256(readFileSync(file));
     requireCheck(localHash === check.sha256, `Generated artifact differs from publication state: ${check.path}`);
-    const fetched = run('curl', ['--disable', '--fail', '--silent', '--show-error', '--proto', '=https', '--connect-timeout', '5', '--max-time', '20', '--max-filesize', '2097152', '--retry', '0', '--write-out', '\n%{http_code}', `${base}${check.path}`], `Production read for ${check.path}`, { binary: true, timeout: 25_000, maxBuffer: 3 * 1024 * 1024 });
-    const body = fetched.stdout;
-    requireCheck(body.length >= 4 && body.subarray(-4).toString('ascii') === '\n200', `Production did not return HTTP 200: ${check.path}`);
-    requireCheck(sha256(body.subarray(0, -4)) === localHash, `Production content differs from the current artifact: ${check.path}`);
+    const body = readProduction(`${base}${check.path}`);
+    requireCheck(sha256(body) === localHash, `Production content differs from the current artifact: ${check.path}`);
   }
   return { base, checks: seen.size, issueUrl: `${base}/weeks/${expectedWeek}/` };
 }

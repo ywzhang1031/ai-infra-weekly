@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { readProduction } from './production-read.mjs';
 
 // Local draft preparation only. This module has no provider credentials or sending API.
 const defaultRoot = dirname(dirname(fileURLToPath(import.meta.url)));
@@ -19,11 +20,8 @@ function read(root, file) {
 const readJson = (root, file) => JSON.parse(read(root, file).toString('utf8'));
 
 function verifyIssueOnline(url, expectedHash) {
-  const result = spawnSync('curl', ['--disable', '--fail', '--silent', '--show-error', '--proto', '=https',
-    '--connect-timeout', '5', '--max-time', '20', '--max-filesize', '2097152', '--retry', '0', '--write-out', '\n%{http_code}', url],
-  { timeout: 25_000, maxBuffer: 3 * 1024 * 1024 });
-  requireCheck(!result.error && result.status === 0 && result.stdout?.subarray(-4).toString() === '\n200', 'The current issue could not be verified online; no draft was prepared.');
-  requireCheck(sha256(result.stdout.subarray(0, -4)) === expectedHash, 'The online issue differs from the published artifact; no draft was prepared.');
+  const body = readProduction(url);
+  requireCheck(sha256(body) === expectedHash, 'The online issue differs from the published artifact; no draft was prepared.');
 }
 
 function bodyFor(issue, base) {
