@@ -140,7 +140,9 @@ test('verified publication stays published when preparing the email fails', () =
   config.subscriptions.buttondownStatus = 'pending_review';
   json(join(root, 'site-config.json'), config);
   writeFileSync(join(root, 'publish.mjs'), readFileSync(new URL('../publish.mjs', import.meta.url)));
-  writeFileSync(join(root, 'scripts/email-draft.mjs'), readFileSync(new URL('./email-draft.mjs', import.meta.url)));
+  for (const file of ['email-draft.mjs', 'email-sync.mjs', 'buttondown-api.mjs']) {
+    writeFileSync(join(root, 'scripts', file), readFileSync(new URL(`./${file}`, import.meta.url)));
+  }
   writeFileSync(join(root, 'scripts/production-read.mjs'), readFileSync(new URL('./production-read.mjs', import.meta.url)));
   mkdirSync(join(root, 'bin'));
   writeFileSync(join(root, 'bin/curl'), `#!${process.execPath}
@@ -165,7 +167,9 @@ test('two TLS timeouts preserve the successful publication receipt and create no
   const receiptPath = join(root, 'publication-state.json');
   const previousReceipt = readFileSync(receiptPath);
   writeFileSync(join(root, 'publish.mjs'), readFileSync(new URL('../publish.mjs', import.meta.url)));
-  writeFileSync(join(root, 'scripts/email-draft.mjs'), readFileSync(new URL('./email-draft.mjs', import.meta.url)));
+  for (const file of ['email-draft.mjs', 'email-sync.mjs', 'buttondown-api.mjs']) {
+    writeFileSync(join(root, 'scripts', file), readFileSync(new URL(`./${file}`, import.meta.url)));
+  }
   writeFileSync(join(root, 'scripts/production-read.mjs'), readFileSync(new URL('./production-read.mjs', import.meta.url)));
   mkdirSync(join(root, 'bin'));
   writeFileSync(join(root, 'bin/curl'), `#!${process.execPath}
@@ -191,4 +195,39 @@ process.exitCode=28;
   assert.match(error.message, /after 2 attempt\(s\)/);
   assert.match(error.message, /attempt=1, phase=tls_handshake, curl_exit=28/);
   assert.match(error.message, /attempt=2, phase=tls_handshake, curl_exit=28/);
+});
+
+
+test('verified publication remains published when the Buttondown API rejects credentials', () => {
+  const { root } = fixture();
+  writeFileSync(join(root, 'publish.mjs'), readFileSync(new URL('../publish.mjs', import.meta.url)));
+  for (const file of ['email-draft.mjs', 'email-sync.mjs', 'buttondown-api.mjs', 'production-read.mjs']) {
+    writeFileSync(join(root, 'scripts', file), readFileSync(new URL(`./${file}`, import.meta.url)));
+  }
+  mkdirSync(join(root, 'bin'));
+  writeFileSync(join(root, 'bin/curl'), `#!${process.execPath}
+const fs=require('node:fs');
+if(process.argv.includes('--config')) {
+  const config=fs.readFileSync(0,'utf8');
+  if(!config.includes('request = "GET"')) process.exit(99);
+  fs.appendFileSync('api-reads.txt','GET\\n');
+  process.stdout.write('{}\\n__BUTTONDOWN_HTTP__401\\n');
+} else {
+  const route=new URL(process.argv.at(-1)).pathname;
+  process.stdout.write(fs.readFileSync('dist/'+(route.endsWith('/')?route.slice(1)+'index.html':route.slice(1))));
+  process.stdout.write('\\n__INFRA_PRODUCTION_READ__\\t200\\t0.0001\\t0.0003\\t0.9\\t1.0\\t1.1\\t0\\n');
+}
+`, { mode: 0o755 });
+  const result = spawnSync(process.execPath, ['publish.mjs', '--expected-week', week, '--verify-only'], {
+    cwd: root, encoding: 'utf8', env: { ...process.env, BUTTONDOWN_API_KEY: 'fixture-only', PATH: `${join(root, 'bin')}:${process.env.PATH}` }, timeout: 15_000,
+  });
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(JSON.parse(readFileSync(join(root, 'publication-state.json'))).status, 'published');
+  assert.equal(existsSync(join(root, 'publication-last-error.json')), false);
+  assert.equal(readFileSync(join(root, 'api-reads.txt'), 'utf8'), 'GET\n');
+  const directory = join(root, '.local-maintenance/newsletters', week);
+  assert.equal(existsSync(join(directory, 'draft.md')), true);
+  assert.equal(existsSync(join(directory, 'buttondown-create.json')), false);
+  assert.equal(JSON.parse(readFileSync(join(directory, 'buttondown-sync-error.json'))).code, 'api_auth_scope');
+  assert.doesNotMatch(result.stdout + result.stderr, /fixture-only/);
 });

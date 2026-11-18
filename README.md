@@ -43,7 +43,7 @@ npm run deploy -- --expected-week YYYY-MM-DD
 
 只有新的 `publication-state.json` 中 `latestWeek`、`checkedAt` 和所有 `checks` 成功，才算上线。失败记录在 `publication-last-error.json`；旧成功记录不代表本次完成。部署成功但网络验收中断时使用 `--verify-only` 继续验收，避免重复部署。
 
-发布后按 [每周发布流程](docs/weekly-publishing.md) 同步公开源码并创建对应 GitHub Release。邮件是否启用由独立服务配置决定；本站不自动发送邮件。
+发布后按 [每周发布流程](docs/weekly-publishing.md) 同步公开源码并创建对应 GitHub Release。配置受限 Buttondown API key 后，生产验收会自动保存或复用邮件 Draft；可用 `npm run email:sync -- --expected-week YYYY-MM-DD` 单独恢复。发信仍需所有者逐期确认，本站不自动发送邮件。
 
 ## 部署自己的站点
 

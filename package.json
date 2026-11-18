@@ -11,6 +11,8 @@
     "check": "node scripts/check.mjs",
     "release": "node scripts/release.mjs",
     "email:draft": "node scripts/email-draft.mjs",
+    "email:sync": "node scripts/email-sync.mjs",
+    "test:buttondown-api": "node --test scripts/buttondown-api.test.mjs",
     "test:email-draft": "node --test scripts/email-draft.test.mjs",
     "test:production-read": "node --test scripts/production-read.test.mjs"
   },

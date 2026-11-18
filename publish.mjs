@@ -3,7 +3,7 @@ import { readFile, writeFile, mkdir, readdir, rm } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { prepareEmailDraft } from './scripts/email-draft.mjs';
+import { prepareAndSyncEmailDraft } from './scripts/email-sync.mjs';
 import { readProduction } from './scripts/production-read.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
@@ -78,9 +78,9 @@ try {
 if (publicationVerified) {
   const directory = path.join(root, '.local-maintenance', 'newsletters', expectedWeek);
   try {
-    const result = prepareEmailDraft({ root, expectedWeek, productionVerified: true, verifiedInputSha256 });
+    const result = prepareAndSyncEmailDraft({ root, expectedWeek, productionVerified: true, verifiedInputSha256 });
     await rm(path.join(directory, 'generation-error.json'), { force: true });
-    console.log(`Email draft ${result.reused ? 'reused' : 'prepared'}: ${result.manifestPath}; remote=${result.manifest.remote.status}; no email sent.`);
+    console.log(`Buttondown draft verified: ${JSON.stringify(result)}; no email sent.`);
   } catch (error) {
     await mkdir(directory, { recursive: true });
     await writeFile(path.join(directory, 'generation-error.json'), JSON.stringify({
