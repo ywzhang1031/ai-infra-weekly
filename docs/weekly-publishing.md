@@ -66,7 +66,7 @@ macOS 自动化从登录钥匙串读取 `service=ai-infra-weekly.buttondown`、`
 security add-generic-password -a ai-infra-weekly -s ai-infra-weekly.buttondown -T /usr/bin/security -w
 ```
 
-`-w` 必须放在最后，使用隐藏输入；命令不覆盖已有项目。其他运行环境可由所有者在安全 secret 管理器提供 `BUTTONDOWN_API_KEY`，权限必须与上述一致。Cloudflare 静态站点不需要也不会收到该 key。钥匙串锁定、key 撤销或权限不足时保留待恢复状态，不自动回退到浏览器或使用 Primary key。
+`-w` 必须放在最后，使用隐藏输入；命令不覆盖已有项目。 若通过“钥匙串访问”界面保存，则在这一凭据的“访问控制”中仅将 `/usr/bin/security` 加入始终允许列表，保持“允许所有应用程序访问”关闭。随后用两个独立进程验证读取无需交互，检查退出状态即可，不输出密钥；仅手动点一次“允许”不足以证明无人值守可用。其他运行环境可由所有者在安全 secret 管理器提供 `BUTTONDOWN_API_KEY`，权限必须与上述一致。Cloudflare 静态站点不需要也不会收到该 key。钥匙串锁定、key 撤销或权限不足时保留待恢复状态，不自动回退到浏览器或使用 Primary key。
 
 ### API 保存与恢复
 
@@ -77,6 +77,8 @@ security add-generic-password -a ai-infra-weekly -s ai-infra-weekly.buttondown -
 5. 创建后 GET 读回，核对 ID、Draft 状态、主题和正文，才标为 `awaiting_owner_review`。实际远端 URL、正文 SHA256 与 verifiedAt 写回 manifest；人工稿的实际哈希与生成稿分开。API 错误保存在 `buttondown-sync-error.json`，入口失败另存 `sync-pending.json`；不记录 token、订阅者名单或原始错误响应。
 
 认证头经进程标准输入传给 curl，不进入命令行参数；保持代理与 TLS 校验，不跟随重定向，限制连接/请求时长及响应大小。API POST 不沿用生产 GET 的超时重试规则。没有草稿 URL 或只有创建响应都不能当作读回验收通过。
+
+2026-11-19 已通过真实受限 API 验收：保留现有人工 Draft，创建独立 TEST Draft 后读回全文与状态，第二次运行复用同一测试 ID，并核对原有草稿未变。没有发送、排期或购买套餐；测试稿被排除在正式周报去重与发送候选之外。验收不代表下一次自然定时运行已经发生，也不保证上游网络或凭据永不失效。
 
 同一期、相同输入和模板重复运行会原样复用本地稿及远端记录；检测到本地人工改动、原稿变化或模板变化时停止覆盖。所有草稿、哈希、远端状态和错误记录均位于已忽略的 `.local-maintenance/`，不进入公开仓库或 `dist`。
 
