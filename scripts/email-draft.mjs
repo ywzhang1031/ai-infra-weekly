@@ -11,6 +11,34 @@ const sha256 = value => createHash('sha256').update(value).digest('hex');
 const requireCheck = (condition, message) => { if (!condition) throw new Error(message); };
 const markdown = value => String(value).replace(/\\/g, '\\\\').replace(/([`*_{}\[\]<>#!|])/g, '\\$1').replace(/\s+/g, ' ').trim();
 
+function validateIdentity({ expectedWeek, emailTestId }) {
+  requireCheck(typeof expectedWeek === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(expectedWeek), 'Pass --expected-week YYYY-MM-DD.');
+  const date = new Date(`${expectedWeek}T00:00:00Z`);
+  requireCheck(Number.isFinite(date.valueOf()) && date.toISOString().slice(0, 10) === expectedWeek, 'The expected week must be a real date.');
+  requireCheck(emailTestId === undefined || typeof emailTestId === 'string' && /^BD-CREATE-E2E-[A-Za-z0-9-]{1,60}$/.test(emailTestId), 'Pass a valid --email-test-id BD-CREATE-E2E-<identifier>.');
+}
+
+export function emailDraftDirectory({ root = defaultRoot, expectedWeek, emailTestId }) {
+  validateIdentity({ expectedWeek, emailTestId });
+  return emailTestId === undefined ? join(root, '.local-maintenance', 'newsletters', expectedWeek)
+    : join(root, '.local-maintenance', 'newsletter-tests', expectedWeek, emailTestId);
+}
+
+export function parseEmailOptions(args, { allowVerifyOnly = false } = {}) {
+  const options = {};
+  for (let index = 0; index < args.length; index += 1) {
+    const flag = args[index];
+    if (flag === '--verify-only' && allowVerifyOnly && options.verifyOnly === undefined) options.verifyOnly = true;
+    else {
+      const key = flag === '--expected-week' ? 'expectedWeek' : flag === '--email-test-id' ? 'emailTestId' : null;
+      requireCheck(key && options[key] === undefined && index + 1 < args.length && !args[index + 1].startsWith('--'), 'Invalid, duplicate, or incomplete email publication arguments.');
+      options[key] = args[++index];
+    }
+  }
+  validateIdentity(options);
+  return options;
+}
+
 function read(root, file) {
   const target = join(root, file);
   const stat = lstatSync(target);
@@ -41,10 +69,8 @@ function bodyFor(issue, base) {
   ].join('\n');
 }
 
-export function prepareEmailDraft({ root = defaultRoot, expectedWeek, productionVerified = false, verifiedInputSha256, verifyOnline = verifyIssueOnline } = {}) {
-  requireCheck(typeof expectedWeek === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(expectedWeek), 'Pass --expected-week YYYY-MM-DD.');
-  const date = new Date(`${expectedWeek}T00:00:00Z`);
-  requireCheck(Number.isFinite(date.valueOf()) && date.toISOString().slice(0, 10) === expectedWeek, 'The expected week must be a real date.');
+export function prepareEmailDraft({ root = defaultRoot, expectedWeek, emailTestId, productionVerified = false, verifiedInputSha256, verifyOnline = verifyIssueOnline } = {}) {
+  const directory = emailDraftDirectory({ root, expectedWeek, emailTestId });
   const weeks = readdirSync(join(root, 'content')).filter(file => /^\d{4}-\d{2}-\d{2}\.json$/.test(file)).sort().reverse();
   requireCheck(weeks[0] === `${expectedWeek}.json`, 'Only the latest public issue can prepare a weekly email draft.');
   const inputFile = `content/${expectedWeek}.json`;
@@ -81,16 +107,16 @@ export function prepareEmailDraft({ root = defaultRoot, expectedWeek, production
   const issueUrl = `${base}/weeks/${expectedWeek}/`;
   const issueHash = publication.checks.find(check => check.path === `/weeks/${expectedWeek}/`).sha256;
   if (!productionVerified) verifyOnline(issueUrl, issueHash);
-  const body = bodyFor(issue, base);
-  const subject = `AI Infra Weekly · ${expectedWeek}｜${issue.title.replace(/\s+/g, ' ').trim()}`;
+  const body = (emailTestId === undefined ? '' : `**测试草稿：不发送、不排期。**\n\n标识：${emailTestId}\n\n这只是上线后自动备稿链路验收，复用已公开的 ${expectedWeek} 内容，不代表新一期。\n\n---\n\n`) + bodyFor(issue, base);
+  const subject = (emailTestId === undefined ? '' : '[TEST · 不发送] ') + `AI Infra Weekly · ${expectedWeek}｜${issue.title.replace(/\s+/g, ' ').trim()}` + (emailTestId === undefined ? '' : ` · ${emailTestId}`);
+  const sendPolicy = emailTestId === undefined ? 'owner_confirmation_required' : 'never_send';
   const inputSha256 = sha256(input);
   const bodySha256 = sha256(body);
-  const directory = join(root, '.local-maintenance', 'newsletters', expectedWeek);
   const manifestPath = join(directory, 'manifest.json');
   const bodyPath = join(directory, 'draft.md');
   if (existsSync(manifestPath)) {
     const previous = readJson(directory, 'manifest.json');
-    requireCheck(previous.week === expectedWeek && previous.issueUrl === issueUrl, 'Existing draft identity differs; it was preserved for review.');
+    requireCheck(previous.week === expectedWeek && previous.issueUrl === issueUrl && previous.testId === emailTestId && previous.sendPolicy === sendPolicy, 'Existing draft identity differs; it was preserved for review.');
     requireCheck(existsSync(bodyPath) && sha256(read(directory, 'draft.md')) === previous.bodySha256, 'The local draft was edited or removed; it was preserved for manual review.');
     requireCheck(previous.inputSha256 === inputSha256 && previous.bodySha256 === bodySha256 && previous.subject === subject, 'Published content or the template changed; the existing draft and remote record were preserved for review.');
     return { reused: true, manifestPath, bodyPath, manifest: previous };
@@ -101,7 +127,7 @@ export function prepareEmailDraft({ root = defaultRoot, expectedWeek, production
     schemaVersion: 1, week: expectedWeek, subject, issueUrl, newsletterUrl: config.subscriptions.buttondownUrl,
     inputSha256, bodySha256, createdAt: new Date().toISOString(), status: 'local_ready',
     publication: { checkedAt: publication.checkedAt, version: publication.version ?? null, issueSha256: issueHash, receiptSha256: sha256(publicationBytes) },
-    format: 'markdown', sendPolicy: 'owner_confirmation_required',
+    format: 'markdown', sendPolicy, ...(emailTestId === undefined ? {} : { testId: emailTestId }),
     remote: { status: 'pending', url: null, bodySha256: null, verifiedAt: null },
   };
   writeFileSync(bodyPath, body, { flag: 'wx' });
@@ -111,18 +137,19 @@ export function prepareEmailDraft({ root = defaultRoot, expectedWeek, production
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   const args = process.argv.slice(2);
+  let options;
   try {
-    requireCheck(args.length === 2 && args[0] === '--expected-week', 'Usage: node scripts/email-draft.mjs --expected-week YYYY-MM-DD');
-    const result = prepareEmailDraft({ expectedWeek: args[1] });
+    options = parseEmailOptions(args);
+    const result = prepareEmailDraft(options);
     rmSync(join(dirname(result.manifestPath), 'generation-error.json'), { force: true });
     console.log(JSON.stringify({ status: result.manifest.status, reused: result.reused, manifest: result.manifestPath, body: result.bodyPath, remote: result.manifest.remote.status, sendsEmail: false }, null, 2));
   } catch (error) {
     console.error(`Email draft not prepared: ${error.message}`);
-    if (args.length === 2 && args[0] === '--expected-week' && /^\d{4}-\d{2}-\d{2}$/.test(args[1])) {
-      const directory = join(defaultRoot, '.local-maintenance', 'newsletters', args[1]);
+    if (options) {
+      const directory = emailDraftDirectory(options);
       mkdirSync(directory, { recursive: true });
       writeFileSync(join(directory, 'generation-error.json'), JSON.stringify({
-        status: 'pending', week: args[1], attemptedAt: new Date().toISOString(), message: error.message,
+        status: 'pending', week: options.expectedWeek, ...(options.emailTestId === undefined ? {} : { testId: options.emailTestId }), attemptedAt: new Date().toISOString(), message: error.message,
       }, null, 2) + '\n');
     }
     process.exitCode = 1;

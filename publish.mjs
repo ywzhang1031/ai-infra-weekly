@@ -4,16 +4,18 @@ import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { prepareAndSyncEmailDraft } from './scripts/email-sync.mjs';
-import { readProduction } from './scripts/production-read.mjs';
+import { emailDraftDirectory, parseEmailOptions } from './scripts/email-draft.mjs';
+import { readProductionBatch } from './scripts/production-read.mjs';
 
 const root = fileURLToPath(new URL('.', import.meta.url));
 const statePath = path.join(root, 'publication-state.json');
-await mkdir(path.join(root, '.wrangler'), {recursive:true});
 const config = JSON.parse(await readFile(path.join(root,'site-config.json'), 'utf8'));
 const args = process.argv.slice(2);
-const expectedIndex = args.indexOf('--expected-week');
-const expectedWeek = expectedIndex >= 0 ? args[expectedIndex + 1] : null;
-const verifyOnly = args.includes('--verify-only');
+let options;
+try { options = parseEmailOptions(args, { allowVerifyOnly: true }); }
+catch (error) { console.error(`Publication arguments rejected: ${error.message}`); process.exit(1); }
+const { expectedWeek, emailTestId, verifyOnly } = options;
+await mkdir(path.join(root, '.wrangler'), {recursive:true});
 const digest = body => createHash('sha256').update(body).digest('hex');
 let deployed = null;
 let version = null;
@@ -57,17 +59,19 @@ try {
   const checks = ['/', '/subscribe/', '/latest/', '/site.css', '/site.js', '/favicon.svg', ...weeks.map(w=>`/weeks/${w.slice(0,10)}/`)];
   if (config.baseUrl) checks.push('/feed.xml', '/sitemap.xml');
   const verified = [];
-  for (const route of checks) {
-    const body = readProduction(deployed + route);
+  const responses = readProductionBatch(checks.map(route => deployed + route));
+  for (const [index, response] of responses.entries()) {
+    const route = checks[index];
+    if (response.url !== deployed + route) throw new Error(`Production response URL mismatch: ${route}`);
     const local = await readFile(path.join(root,'dist',route.endsWith('/') ? route+'index.html' : route));
-    const sha256 = digest(body);
+    const sha256 = digest(response.body);
     if (sha256 !== digest(local)) throw new Error(`Production content hash mismatch: ${route}`);
-    verified.push({path:route,matched:true,sha256});
+    verified.push({path:route,matched:true,sha256,transport:response.transport});
   }
   await writeFile(statePath, JSON.stringify({status:'published',checkedAt:new Date().toISOString(),url:deployed,version,latestWeek:expectedWeek,checks:verified},null,2)+'\n');
   await rm(path.join(root, 'publication-last-error.json'), {force:true});
   publicationVerified = true;
-  console.log(`Verified public site: ${deployed}`);
+  console.log(`Verified public site: ${deployed}; routes=${verified.length}; new_connections=${responses.reduce((total, response) => total + response.transport.newConnections, 0)}`);
 } catch(error) {
   console.error(`Publication not verified: ${error.message}`);
   await writeFile(path.join(root,'publication-last-error.json'),JSON.stringify({status:'failed',attemptedAt:new Date().toISOString(),url:deployed,version,expectedWeek,message:error.message},null,2)+'\n');
@@ -76,16 +80,17 @@ try {
 
 // A draft failure must not turn a verified website deployment into a publication failure.
 if (publicationVerified) {
-  const directory = path.join(root, '.local-maintenance', 'newsletters', expectedWeek);
+  const directory = emailDraftDirectory({ root, expectedWeek, emailTestId });
   try {
-    const result = prepareAndSyncEmailDraft({ root, expectedWeek, productionVerified: true, verifiedInputSha256 });
+    const result = prepareAndSyncEmailDraft({ root, expectedWeek, emailTestId, productionVerified: true, verifiedInputSha256 });
     await rm(path.join(directory, 'generation-error.json'), { force: true });
     console.log(`Buttondown draft verified: ${JSON.stringify(result)}; no email sent.`);
   } catch (error) {
     await mkdir(directory, { recursive: true });
     await writeFile(path.join(directory, 'generation-error.json'), JSON.stringify({
-      status: 'pending', week: expectedWeek, attemptedAt: new Date().toISOString(), message: error.message,
+      status: 'pending', week: expectedWeek, ...(emailTestId === undefined ? {} : { testId: emailTestId }), attemptedAt: new Date().toISOString(), message: error.message,
     }, null, 2) + '\n');
     console.error(`Website verified; email draft pending: ${error.message}`);
+    if (emailTestId !== undefined) process.exitCode = 1;
   }
 }

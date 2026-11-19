@@ -1,4 +1,7 @@
 import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, statSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const MARKER = '\n__INFRA_PRODUCTION_READ__\t';
@@ -27,6 +30,8 @@ function phaseFor(result, response) {
   if (response && response.http !== 0 && response.http !== 200) return 'http';
   if (result.status === 28) {
     if (!response) return 'timeout_unknown';
+    if (response.timings.firstByte || response.http === 200) return 'response_body';
+    if (response.reusedConnection) return 'response_headers';
     if (!response.timings.connect) return 'connect';
     if (!response.timings.tls) return 'tls_handshake';
     return response.timings.firstByte ? 'response_body' : 'response_headers';
@@ -56,5 +61,64 @@ export function readProduction(value, { run = spawnSync } = {}) {
     const error = new Error(`Production GET failed for ${url.pathname} after ${attempts.length} attempt(s): ${details}`);
     error.attempts = attempts;
     throw error;
+  }
+}
+
+// One curl process keeps a verified TLS connection across the same site's routes.
+// Each body has its own bounded file; metadata never mixes with response bytes.
+export function readProductionBatch(values, { run = spawnSync } = {}) {
+  if (!Array.isArray(values) || values.length < 1 || values.length > 64) throw new Error('Production batch requires 1–64 HTTPS URLs.');
+  const urls = values.map(value => {
+    let url;
+    try { url = new URL(value); } catch { throw new Error('Production batch requires valid HTTPS URLs.'); }
+    if (url.protocol !== 'https:' || url.username || url.password || url.hash) throw new Error('Production batch requires HTTPS without credentials or fragments.');
+    return url;
+  });
+  if (urls.some(url => url.origin !== urls[0].origin) || new Set(urls.map(url => url.href)).size !== urls.length) {
+    throw new Error('Production batch requires unique URLs from one origin.');
+  }
+  const marker = '__INFRA_PRODUCTION_BATCH__';
+  const format = `${marker}\t%{urlnum}\t%{http_code}\t%{exitcode}\t%{time_namelookup}\t%{time_connect}\t%{time_appconnect}\t%{time_starttransfer}\t%{time_total}\t%{ssl_verify_result}\t%{num_connects}\t%{conn_id}\n`;
+  const attempts = [];
+  for (let attempt = 1; attempt <= 2; attempt += 1) {
+    const temporary = mkdtempSync(join(tmpdir(), 'infra-production-'));
+    try {
+      const files = urls.map((_, index) => join(temporary, `${index}.body`));
+      for (const file of files) writeFileSync(file, '', { flag: 'wx', mode: 0o600 });
+      const args = ['--disable', '--fail', '--fail-early', '--silent', '--show-error', '--globoff', '--proto', '=https', '--request', 'GET',
+        '--connect-timeout', '10', '--max-time', '20', '--max-filesize', String(MAX_BODY_BYTES), '--retry', '0', '--write-out', format];
+      urls.forEach((url, index) => args.push('--output', files[index], url.href));
+      const result = run('curl', args, { timeout: urls.length * 25_000, maxBuffer: 128 * 1024 });
+      const lines = Buffer.from(result.stdout || '').toString('utf8').trimEnd().split('\n');
+      const rows = [];
+      let validMetadata = Boolean(lines[0]);
+      for (const line of lines) {
+        const fields = line.split('\t');
+        if (fields.length !== 12 || fields[0] !== marker || !fields.slice(1, 11).every(field => /^\d+(?:\.\d+)?$/.test(field)) || !/^-?\d+$/.test(fields[11])) { validMetadata = false; break; }
+        const [index, http, exit, dns, connect, tls, firstByte, total, sslVerify, newConnections, connectionId] = fields.slice(1).map(Number);
+        if (index !== rows.length || index >= urls.length || !fields.slice(1).map(Number).every(Number.isFinite)) { validMetadata = false; break; }
+        rows.push({ index, http, exit, sslVerify, newConnections, connectionId, timings: { dns, connect, tls, firstByte, total } });
+      }
+      if (validMetadata && !result.error && !result.signal && result.status === 0 && rows.length === urls.length && rows.every(row => row.exit === 0 && row.http === 200 && row.sslVerify === 0)) {
+        return rows.map(row => {
+          if (statSync(files[row.index]).size > MAX_BODY_BYTES) throw new Error('Production response exceeds its size limit.');
+          return { url: urls[row.index].href, body: readFileSync(files[row.index]), transport: {
+            attempt, newConnections: row.newConnections, connectionId: row.connectionId, timingsSeconds: row.timings,
+          } };
+        });
+      }
+      const last = validMetadata ? rows.at(-1) : null;
+      const reusedConnection = last?.newConnections === 0 && last.connectionId >= 0 && rows.slice(0, -1).some(row => row.connectionId === last.connectionId && row.exit === 0 && row.http === 200 && row.sslVerify === 0);
+      const response = last ? { ...last, reusedConnection, body: Buffer.alloc(0) } : null;
+      const phase = phaseFor(result, response);
+      const priorRowsValid = validMetadata && rows.slice(0, -1).every(row => row.exit === 0 && row.http === 200 && row.sslVerify === 0);
+      attempts.push({ attempt, route: urls[last?.index ?? 0].pathname, phase, curlExit: result.status ?? null, http: last?.http ?? null, timingsSeconds: last?.timings ?? null });
+      if (attempt === 1 && result.status === 28 && !result.error && !result.signal && priorRowsValid && last?.exit === 28 && phase !== 'certificate' && phase !== 'http') continue;
+      const error = new Error(`Production batch failed: ${attempts.map(item => `attempt=${item.attempt}, route=${item.route}, phase=${item.phase}, curl_exit=${item.curlExit}, http=${item.http}, timings_s=${JSON.stringify(item.timingsSeconds)}`).join('; ')}`);
+      error.attempts = attempts;
+      throw error;
+    } finally {
+      rmSync(temporary, { recursive: true, force: true });
+    }
   }
 }

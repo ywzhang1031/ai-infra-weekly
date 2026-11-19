@@ -52,7 +52,7 @@ npm run release -- --expected-week YYYY-MM-DD
 npm run email:sync -- --expected-week YYYY-MM-DD
 ```
 
-该命令重新构建和检查公开内容，核对完整生产验收记录及本地产物哈希，再有界校验当期生产正文。发布、Release 与邮件草稿共用同一 HTTPS 读取实现：每次连接上限 10 秒、请求总上限 20 秒，仅传输超时最多追加一次全新的 GET；丢弃失败请求的部分正文，HTTP 非 200、证书错误或内容哈希不符不重试。保持现有代理环境和 TLS 证书校验，不修改系统网络设置。失败记录只含退出码、阶段及耗时，不输出凭据或完整网络响应。它只接受最新、已经发布的公开期号。`deploy` 刚完成全路由验证时复用该结果，不重复请求生产正文。输入只来自 `content/YYYY-MM-DD.json`，`progress=[]`；不读取私人研究报告或学习记录。
+该命令重新构建和检查公开内容，核对完整生产验收记录及本地产物哈希，再有界校验当期生产正文。发布验收在同一个 curl 进程中依次读取同站路由，复用已验证的 TLS 连接；每个响应独立保存并核对哈希，记录实际连接数与耗时，避免每个路径重新握手。Release 与单独邮件恢复仍读取对应正文。每次连接上限 10 秒、单个请求总上限 20 秒；仅传输超时最多重试一次，批次重试丢弃全部部分结果并从新进程开始，HTTP 非 200、证书错误或内容哈希不符不重试。保持现有代理环境和 TLS 证书校验，不修改系统网络设置。失败记录只含退出码、阶段及耗时，不输出凭据或完整网络响应。它只接受最新、已经发布的公开期号。`deploy` 刚完成全路由验证时复用该结果，不重复请求生产正文。输入只来自 `content/YYYY-MM-DD.json`，`progress=[]`；不读取私人研究报告或学习记录。
 
 模板保留单栏短导读、最多三个当期重点、深绿底白字全文按钮、当期永久链接、最新一期与历史归档、来源覆盖及证据局限。邮件主题在 `manifest.subject`，正文在 `draft.md`；Buttondown 会渲染主题，因此正文不重复添加一级标题。使用 Markdown 编辑模式并保留平台提供的退订页脚。
 
@@ -68,6 +68,14 @@ security add-generic-password -a ai-infra-weekly -s ai-infra-weekly.buttondown -
 
 `-w` 必须放在最后，使用隐藏输入；命令不覆盖已有项目。 若通过“钥匙串访问”界面保存，则在这一凭据的“访问控制”中仅将 `/usr/bin/security` 加入始终允许列表，保持“允许所有应用程序访问”关闭。随后用两个独立进程验证读取无需交互，检查退出状态即可，不输出密钥；仅手动点一次“允许”不足以证明无人值守可用。其他运行环境可由所有者在安全 secret 管理器提供 `BUTTONDOWN_API_KEY`，权限必须与上述一致。Cloudflare 静态站点不需要也不会收到该 key。钥匙串锁定、key 撤销或权限不足时保留待恢复状态，不自动回退到浏览器或使用 Primary key。
 
+普通应用允许列表与 Keychain 的签名 partition 检查是两层权限。即使条目允许 `/usr/bin/security`，缺少该工具的 `apple-tool:` partition 仍可能等待系统确认。遇到 `credential_timeout` 时，由所有者在终端手动运行以下无输出命令，并只对这一条目完成系统“始终允许”；不要批量改 partition、允许所有应用、关闭安全检查或复制密钥到文件：
+
+```sh
+/usr/bin/security find-generic-password -s ai-infra-weekly.buttondown -a ai-infra-weekly -w >/dev/null
+```
+
+自动化保持单次 10 秒读取上限，不循环等待；区分超时、条目不存在、读取被拒与格式异常，不输出原始 stdout/stderr。恢复必须以两个独立进程无交互读取成功为准，而非仅凭界面点击。实现依据见 Apple 的 [partitionIdForProcess](https://github.com/apple-oss-distributions/Security/blob/main/securityd/src/clientid.cpp) 与 [validatePartition](https://github.com/apple-oss-distributions/Security/blob/main/securityd/src/acls.cpp)。
+
 ### API 保存与恢复
 
 1. `email:sync` 先执行上面的公开稿、生产记录与在线正文检查。`email:draft` 仍保留为仅生成本地稿的诊断命令，不调用远端。API 阶段只访问固定 `https://api.buttondown.com/v1/emails` 列表与详情，或 POST 到该路径新建 Draft；不提供编辑、删除、发送、排期接口。
@@ -81,6 +89,19 @@ security add-generic-password -a ai-infra-weekly -s ai-infra-weekly.buttondown -
 2026-11-19 已通过真实受限 API 验收：保留现有人工 Draft，创建独立 TEST Draft 后读回全文与状态，第二次运行复用同一测试 ID，并核对原有草稿未变。没有发送、排期或购买套餐；测试稿被排除在正式周报去重与发送候选之外。验收不代表下一次自然定时运行已经发生，也不保证上游网络或凭据永不失效。
 
 同一期、相同输入和模板重复运行会原样复用本地稿及远端记录；检测到本地人工改动、原稿变化或模板变化时停止覆盖。所有草稿、哈希、远端状态和错误记录均位于已忽略的 `.local-maintenance/`，不进入公开仓库或 `dist`。
+
+### 完整流程验收（仅显式维护时使用）
+
+本期正式稿已经发送时，不重建或覆盖它。为验证同一个发布 hook 的“新建”分支，可以对真实已审核期刊使用固定、唯一的测试标识：
+
+```sh
+npm run deploy -- --expected-week YYYY-MM-DD --email-test-id BD-CREATE-E2E-<unique-id>
+npm run deploy -- --expected-week YYYY-MM-DD --verify-only --email-test-id BD-CREATE-E2E-<same-id>
+```
+
+首轮实际部署并验证所有生产路由后，自动创建带永久正文链接的 `[TEST · 不发送]` Draft；第二轮只复核生产内容并复用同一远端 ID，不再 POST。测试稿及幂等、错误记录独立保存在 `.local-maintenance/newsletter-tests/YYYY-MM-DD/<test-id>/`，强制 `sendPolicy=never_send`，读回成功才标 `test_draft_verified`。正式 manifest 与原有邮件保持原样。邮件验收失败时测试命令退出非零，但仍保留网站的真实发布状态。
+
+每周正常任务不传 `--email-test-id`，不自动生成测试稿；只为新的真实期刊准备一份待所有者确认的正式 Draft。测试路径不能用于发送，也不能代替下一次自然定时运行的记录。
 
 ## 失败与恢复
 

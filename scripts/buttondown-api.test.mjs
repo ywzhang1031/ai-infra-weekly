@@ -42,13 +42,13 @@ function fixture() {
     createPath: join(directory, 'buttondown-create.json'), errorPath: join(directory, 'buttondown-sync-error.json') };
 }
 
-function api({ listed = [], pages, details = {}, create } = {}) {
+function api({ listed = [], pages, details = {}, create, subjectQuery = week } = {}) {
   const calls = [];
   const request = args => {
     calls.push(structuredClone(args));
     if (args.method === 'GET' && args.path.startsWith('/v1/emails?')) {
       const url = new URL(args.path, 'https://api.buttondown.com');
-      assert.equal(url.searchParams.get('subject'), week);
+      assert.equal(url.searchParams.get('subject'), subjectQuery);
       assert.equal(url.searchParams.has('status'), false, 'Deduplicate across every email status');
       return structuredClone(pages ? pages[Number(url.searchParams.get('page') || '1') - 1] : { count: listed.length, next: null, results: listed });
     }
@@ -65,6 +65,104 @@ function api({ listed = [], pages, details = {}, create } = {}) {
 }
 const sync = (f, request) => syncButtondownDraft({ root: f.root, expectedWeek: week, apiToken: 'fixture-token', request });
 const assertNoPost = calls => assert.ok(calls.every(call => call.method === 'GET'));
+
+function isolatedFixture() {
+  const formal = fixture();
+  formal.manifest.status = 'sent';
+  formal.manifest.remote = { status: 'sent', id: formal.email.id, url: `https://buttondown.com/emails/${formal.email.id}`, bodySha256: hash(formal.body) };
+  json(formal.manifestPath, formal.manifest);
+  json(formal.errorPath, { status: 'historical', message: 'Keep formal records unchanged.' });
+  const formalSnapshot = [formal.manifestPath, formal.bodyPath, formal.errorPath].map(path => readFileSync(path));
+  const emailTestId = 'BD-CREATE-E2E-fixture-1';
+  const draft = prepareEmailDraft({ root: formal.root, expectedWeek: week, emailTestId, productionVerified: true, verifiedInputSha256: formal.manifest.inputSha256 });
+  const body = readFileSync(draft.bodyPath, 'utf8');
+  const directory = join(formal.root, '.local-maintenance/newsletter-tests', week, emailTestId);
+  return { ...formal, ...draft, body, directory, emailTestId, formal, formalSnapshot,
+    email: { id: ids[2], subject: draft.manifest.subject, body: marker + body, status: 'draft' },
+    createPath: join(directory, 'buttondown-create.json'), errorPath: join(directory, 'buttondown-sync-error.json') };
+}
+const syncTest = (f, request) => syncButtondownDraft({ root: f.root, expectedWeek: week, emailTestId: f.emailTestId, request });
+const assertFormalUnchanged = f => assert.deepEqual([f.formal.manifestPath, f.formal.bodyPath, f.formal.errorPath].map(path => readFileSync(path)), f.formalSnapshot);
+
+test('isolated test creation coexists with a sent formal email and repeat uses only GET with the same identity', () => {
+  const f = isolatedFixture();
+  const listed = [{ ...f.formal.email, status: 'sent' }, { ...f.formal.email, id: ids[1], subject: `[TEST · 不发送] ${week} BD-CREATE-E2E-another` }];
+  const first = api({ listed, subjectQuery: f.emailTestId, details: { [f.email.id]: f.email }, create: args => {
+    assert.equal(args.payload.status, 'draft');
+    assert.deepEqual(Object.keys(args.payload).sort(), ['body', 'status', 'subject']);
+    assert.match(args.payload.subject, /^\[TEST · 不发送\]/);
+    assert.ok(args.payload.body.includes(`标识：${f.emailTestId}\n`));
+    assert.equal(readJson(f.createPath).testId, f.emailTestId);
+    return f.email;
+  } });
+  const created = syncTest(f, first.request);
+  assert.equal(created.status, 'test_draft_verified');
+  assert.equal(created.testId, f.emailTestId);
+  assert.equal(created.reused, false);
+  assert.equal(first.calls.filter(call => call.method === 'POST').length, 1);
+  assertFormalUnchanged(f);
+  const key = readJson(f.createPath).idempotencyKey;
+  const second = api({ listed: [...listed, f.email], subjectQuery: f.emailTestId });
+  const reused = syncTest(f, second.request);
+  assert.equal(reused.reused, true);
+  assert.equal(reused.url, created.url);
+  assertNoPost(second.calls);
+  assert.equal(readJson(f.createPath).idempotencyKey, key);
+  assert.equal(readJson(f.manifestPath).sendPolicy, 'never_send');
+  assertFormalUnchanged(f);
+});
+
+test('test identity and never-send policy cannot be rebound to the formal email', () => {
+  for (const kind of ['policy', 'testId', 'formal-url']) {
+    const f = isolatedFixture();
+    if (kind === 'policy') f.manifest.sendPolicy = 'owner_confirmation_required';
+    if (kind === 'testId') f.manifest.testId = 'BD-CREATE-E2E-another';
+    if (kind === 'formal-url') f.manifest.remote.url = f.formal.manifest.remote.url;
+    json(f.manifestPath, f.manifest);
+    const client = api({ subjectQuery: f.emailTestId, details: { [f.formal.email.id]: { ...f.formal.email, status: 'sent' } } });
+    assert.throws(() => syncTest(f, client.request));
+    assertNoPost(client.calls);
+    if (kind !== 'formal-url') assert.equal(client.calls.length, 0);
+    assert.equal(existsSync(f.createPath), false);
+    assertFormalUnchanged(f);
+  }
+});
+
+test('isolated test pagination keeps its own subject identity across pages', () => {
+  const f = isolatedFixture();
+  const pages = [
+    { count: 2, next: `https://api.buttondown.com/v1/emails?subject=${f.emailTestId}&page=2`, results: [{ ...f.formal.email, status: 'sent' }] },
+    { count: 2, next: null, results: [f.email] },
+  ];
+  const client = api({ pages, subjectQuery: f.emailTestId, details: { [f.email.id]: f.email } });
+  assert.equal(syncTest(f, client.request).reused, true);
+  assertNoPost(client.calls);
+  assert.equal(client.calls.filter(call => call.path.startsWith('/v1/emails?')).length, 2);
+  pages[0].next = `https://api.buttondown.com/v1/emails?subject=${week}&page=2`;
+  const wrong = api({ pages, subjectQuery: f.emailTestId });
+  assert.throws(() => syncTest(f, wrong.request), /pagination/);
+  assertNoPost(wrong.calls);
+  assertFormalUnchanged(f);
+});
+
+test('an isolated test that was sent, edited or ambiguously created stops without a replacement', () => {
+  for (const changed of [{ status: 'sent' }, { body: 'Changed text' }]) {
+    const f = isolatedFixture();
+    const client = api({ listed: [{ ...f.email, ...changed }], subjectQuery: f.emailTestId });
+    assert.throws(() => syncTest(f, client.request));
+    assertNoPost(client.calls);
+    assertFormalUnchanged(f);
+  }
+  const f = isolatedFixture();
+  const first = api({ subjectQuery: f.emailTestId, create: () => { throw new Error('timeout'); } });
+  assert.throws(() => syncTest(f, first.request));
+  const key = readJson(f.createPath).idempotencyKey;
+  const second = api({ subjectQuery: f.emailTestId });
+  assert.throws(() => syncTest(f, second.request));
+  assertNoPost(second.calls);
+  assert.equal(readJson(f.createPath).idempotencyKey, key);
+  assertFormalUnchanged(f);
+});
 
 test('preserves an existing formal draft and records its verified remote body without POST', () => {
   const f = fixture();

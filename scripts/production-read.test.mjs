@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { readProduction } from './production-read.mjs';
+import { writeFileSync, existsSync } from 'node:fs';
+import { readProduction, readProductionBatch } from './production-read.mjs';
 
 const url = 'https://weekly.example.org/weeks/2026-11-16/';
 function reply({ status = 0, http = 200, body = 'complete body', ssl = 0, timings = ['0.0001', '0.0003', '0.9', '1.0', '1.1'] } = {}) {
@@ -82,4 +83,92 @@ test('returns unmodified binary body and rejects non-HTTPS or credential URLs be
     assert.throws(() => readProduction(invalid, { run }), /HTTPS/);
   }
   assert.equal(calls.length, 1);
+});
+
+
+function batchLine(index, { http = 200, exit = 0, ssl = 0, connections = index ? 0 : 1, connectionId = 0, connect = 0.002, tls = index ? 0 : 0.9, firstByte = http ? 1 : 0 } = {}) {
+  return `__INFRA_PRODUCTION_BATCH__\t${index}\t${http}\t${exit}\t0.001\t${connect}\t${tls}\t${firstByte}\t1.1\t${ssl}\t${connections}\t${connectionId}\n`;
+}
+function outputs(args) { return args.flatMap((arg, index) => arg === '--output' ? [args[index + 1]] : []); }
+
+test('batch reuses one process and keeps independent binary bodies with verified metadata', () => {
+  let calls = 0;
+  let files;
+  const bodies = [Buffer.from([0, 255, 10]), Buffer.from('second response')];
+  const result = readProductionBatch([url, 'https://weekly.example.org/favicon.svg'], { run: (bin, args, options) => {
+    calls += 1;
+    assert.equal(bin, 'curl');
+    assert.ok(args.includes('--fail-early') && args.includes('--globoff'));
+    assert.ok(!args.includes('--insecure') && !args.includes('--location') && !args.includes('--noproxy'));
+    assert.equal(options.env, undefined);
+    files = outputs(args);
+    assert.equal(files.length, 2);
+    files.forEach((file, index) => writeFileSync(file, bodies[index]));
+    return { status: 0, stdout: batchLine(0) + batchLine(1) };
+  } });
+  assert.equal(calls, 1);
+  assert.deepEqual(result.map(value => value.body), bodies);
+  assert.equal(result.reduce((sum, value) => sum + value.transport.newConnections, 0), 1);
+  assert.ok(files.every(file => !existsSync(file)), 'Temporary response files are removed');
+});
+
+test('batch discards partial response files and retries only once after a TLS timeout', () => {
+  const seen = [];
+  const result = readProductionBatch([url], { run: (_bin, args) => {
+    const file = outputs(args)[0]; seen.push(file);
+    writeFileSync(file, seen.length === 1 ? 'partial unsafe bytes' : 'complete body');
+    return seen.length === 1
+      ? { status: 28, stdout: batchLine(0, { http: 0, exit: 28, ssl: 1, tls: 0, connections: 0, connectionId: -1 }) }
+      : { status: 0, stdout: batchLine(0) };
+  } });
+  assert.equal(seen.length, 2);
+  assert.notEqual(seen[0], seen[1]);
+  assert.equal(result[0].body.toString(), 'complete body');
+  assert.equal(result[0].transport.attempt, 2);
+  assert.ok(seen.every(file => !existsSync(file)));
+});
+
+test('batch rejects incomplete, duplicated, invalid, certificate and HTTP results without retry', () => {
+  const responses = [
+    { status: 0, stdout: batchLine(0) },
+    { status: 0, stdout: batchLine(0) + batchLine(0) },
+    { status: 0, stdout: 'unknown metadata' },
+    { status: 60, stdout: batchLine(0, { http: 0, exit: 60, ssl: 60, tls: 0 }) },
+    { status: 22, stdout: batchLine(0, { http: 503, exit: 22 }) },
+    { status: 0, stdout: batchLine(0, { ssl: 1 }) + batchLine(1) },
+    { status: 28, stdout: batchLine(0, { exit: 28, http: 0, ssl: 1, tls: 0.8 }) },
+    { status: null, error: { code: 'ETIMEDOUT' }, stdout: '' },
+  ];
+  for (const response of responses) {
+    let calls = 0;
+    assert.throws(() => readProductionBatch([url, 'https://weekly.example.org/'], { run: () => { calls += 1; return { ...response, stderr: 'do not leak secret details' }; } }), error => {
+      assert.doesNotMatch(error.message, /secret details/);
+      return true;
+    });
+    assert.equal(calls, 1);
+  }
+});
+
+test('batch timeout budget is bounded and oversized bodies cannot pass', () => {
+  let calls = 0;
+  assert.throws(() => readProductionBatch([url], { run: () => {
+    calls += 1;
+    return { status: 28, stdout: batchLine(0, { http: 0, exit: 28, ssl: 1, tls: 0 }) };
+  } }), error => error.attempts.length === 2);
+  assert.equal(calls, 2);
+  assert.throws(() => readProductionBatch([url], { run: (_bin, args) => {
+    writeFileSync(outputs(args)[0], Buffer.alloc(2 * 1024 * 1024 + 1));
+    return { status: 0, stdout: batchLine(0) };
+  } }), /size limit/);
+  for (const invalid of [[], [url, url], [url, 'https://different.example.org/'], ['http://example.org'], ['https://secret:password@example.org/'], Array(65).fill(url)]) {
+    assert.throws(() => readProductionBatch(invalid, { run: () => { throw new Error('Must not call curl'); } }), error => !error.message.includes('Must not call'));
+  }
+});
+
+test('timeouts on a reused connection distinguish response headers and body from TLS', () => {
+  for (const [http, phase] of [[0, 'response_headers'], [200, 'response_body']]) {
+    assert.throws(() => readProductionBatch([url, 'https://weekly.example.org/'], { run: () => ({
+      status: 28, stdout: batchLine(0) + batchLine(1, { http, exit: 28, connect: 0, tls: 0 }),
+    }) }), error => error.attempts.length === 2 && error.attempts.every(attempt => attempt.phase === phase));
+  }
 });

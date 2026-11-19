@@ -2,7 +2,8 @@ import { spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { existsSync, lstatSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { prepareEmailDraft } from './email-draft.mjs';
+import { emailDraftDirectory, prepareEmailDraft } from './email-draft.mjs';
+import { loadButtondownCredential } from './buttondown-credential.mjs';
 
 const ORIGIN = 'https://api.buttondown.com';
 const VERSION = '2026-04-01';
@@ -24,15 +25,6 @@ function save(file, value) {
   const temporary = `${file}.${randomUUID()}.tmp`;
   writeFileSync(temporary, jsonBytes(value), { flag: 'wx', mode: 0o600 });
   try { renameSync(temporary, file); } finally { rmSync(temporary, { force: true }); }
-}
-function credential(explicit) {
-  let token = explicit ?? process.env.BUTTONDOWN_API_KEY;
-  if (!token && process.platform === 'darwin') {
-    const result = spawnSync('/usr/bin/security', ['find-generic-password', '-s', 'ai-infra-weekly.buttondown', '-a', 'ai-infra-weekly', '-w'], { encoding: 'utf8', timeout: 10_000, maxBuffer: 4096 });
-    if (!result.error && result.status === 0) token = result.stdout.trim();
-  }
-  requireCheck(typeof token === 'string' && /^[A-Za-z0-9._-]{1,512}$/.test(token), 'credential', 'A valid Buttondown API credential is required.');
-  return token;
 }
 function allowedRequest({ method, path, payload, idempotencyKey }) {
   requireCheck(typeof path === 'string' && path.startsWith('/v1/emails'), 'request_scope', 'Only Buttondown email list/detail and draft creation are allowed.');
@@ -59,7 +51,7 @@ export function createButtondownRequest({ apiToken } = {}) {
   let token;
   return ({ method, path, payload, idempotencyKey }) => {
     const url = allowedRequest({ method, path, payload, idempotencyKey });
-    token ??= credential(apiToken);
+    token ??= loadButtondownCredential({ apiToken });
     const quote = value => `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"').replace(/\n/g, '\\n').replace(/\r/g, '\\r').replace(/\t/g, '\\t')}"`;
     const config = [`url = ${quote(url)}`, `request = ${quote(method)}`, `header = ${quote(`Authorization: Token ${token}`)}`,
       `header = ${quote(`X-API-Version: ${VERSION}`)}`, 'header = "Accept: application/json"'];
@@ -98,9 +90,11 @@ function remoteId(value) {
   return match[1];
 }
 
-export function syncButtondownDraft({ root, expectedWeek, apiToken, request } = {}) {
+export function syncButtondownDraft({ root, expectedWeek, emailTestId, apiToken, request } = {}) {
   requireCheck(typeof root === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(expectedWeek ?? ''), 'local_identity', 'A local root and YYYY-MM-DD expected week are required.');
-  const directory = join(root, '.local-maintenance', 'newsletters', expectedWeek);
+  const directory = emailDraftDirectory({ root, expectedWeek, emailTestId });
+  const testMode = emailTestId !== undefined;
+  const searchSubject = emailTestId ?? expectedWeek;
   const manifestPath = join(directory, 'manifest.json');
   const bodyPath = join(directory, 'draft.md');
   const createPath = join(directory, 'buttondown-create.json');
@@ -108,8 +102,8 @@ export function syncButtondownDraft({ root, expectedWeek, apiToken, request } = 
   try {
     const original = read(manifestPath);
     const manifest = JSON.parse(original);
-    requireCheck(manifest.schemaVersion === 1 && manifest.week === expectedWeek && manifest.sendPolicy === 'owner_confirmation_required' && manifest.format === 'markdown', 'local_binding', 'The prepared draft manifest has an invalid identity or send policy.');
-    try { prepareEmailDraft({ root, expectedWeek, productionVerified: true, verifiedInputSha256: manifest.inputSha256 }); }
+    requireCheck(manifest.schemaVersion === 1 && manifest.week === expectedWeek && manifest.testId === emailTestId && manifest.sendPolicy === (testMode ? 'never_send' : 'owner_confirmation_required') && manifest.format === 'markdown', 'local_binding', 'The prepared draft manifest has an invalid identity or send policy.');
+    try { prepareEmailDraft({ root, expectedWeek, emailTestId, productionVerified: true, verifiedInputSha256: manifest.inputSha256 }); }
     catch { throw failure('local_binding', 'The prepared draft no longer matches its public issue, publication receipt, or body hash.'); }
     const body = read(bodyPath).toString('utf8');
     const config = readJson(join(root, 'site-config.json'));
@@ -118,7 +112,7 @@ export function syncButtondownDraft({ root, expectedWeek, apiToken, request } = 
     const payload = { subject: manifest.subject, body: EDITOR + body, status: 'draft' };
     const payloadSha256 = sha(JSON.stringify(payload));
     let pending = existsSync(createPath) ? readJson(createPath) : null;
-    if (pending) requireCheck(pending.week === expectedWeek && pending.issueUrl === manifest.issueUrl && pending.payloadSha256 === payloadSha256 && UUID.test(pending.idempotencyKey ?? ''),
+    if (pending) requireCheck(pending.week === expectedWeek && pending.testId === emailTestId && pending.issueUrl === manifest.issueUrl && pending.payloadSha256 === payloadSha256 && UUID.test(pending.idempotencyKey ?? ''),
       'create_binding', 'A previous create record differs; preserve it for manual recovery.');
     const client = request ?? createButtondownRequest({ apiToken });
     const call = options => {
@@ -139,22 +133,24 @@ export function syncButtondownDraft({ root, expectedWeek, apiToken, request } = 
     };
     const candidates = new Map();
     const consider = (email, pinned = false) => {
-      const matches = !isTest(email) && email.subject.includes(expectedWeek) && hasIssueLink(email.body, manifest.issueUrl);
+      const inScope = testMode ? email.subject.includes(emailTestId) : !isTest(email) && email.subject.includes(expectedWeek);
+      const testIdentity = !testMode || email.subject.startsWith('[TEST · 不发送]') && normalizedBody(email.body).split('\n').includes(`标识：${emailTestId}`);
+      const matches = inScope && testIdentity && email.subject.includes(expectedWeek) && hasIssueLink(email.body, manifest.issueUrl);
       if (pinned) requireCheck(matches, 'remote_binding', 'The recorded remote draft does not match this issue.');
-      if (isTest(email) || !email.subject.includes(expectedWeek)) return;
+      if (!inScope) return;
       requireCheck(matches, 'remote_conflict', 'An email for this date lacks the permanent issue link; preserve it for review.');
       candidates.set(email.id, email);
     };
     const ids = new Set();
     let count;
     for (let page = 1; page <= 10; page += 1) {
-      const result = call({ method: 'GET', path: `/v1/emails?subject=${encodeURIComponent(expectedWeek)}&page=${page}` });
+      const result = call({ method: 'GET', path: `/v1/emails?subject=${encodeURIComponent(searchSubject)}&page=${page}` });
       requireCheck(Array.isArray(result.results) && Number.isSafeInteger(result.count) && result.count >= 0 && (count === undefined || count === result.count), 'pagination', 'Email pagination lacks a stable total count.');
       count = result.count;
       for (const item of result.results) {
         requireCheck(item && ID.test(item.id ?? '') && !ids.has(item.id), 'pagination', 'Email pagination contains invalid or repeated IDs.');
         ids.add(item.id);
-        if (typeof item.subject === 'string' && (item.subject.startsWith('[TEST · 不发送]') || !item.subject.includes(expectedWeek))) continue;
+        if (typeof item.subject === 'string' && (testMode ? !item.subject.includes(emailTestId) : item.subject.startsWith('[TEST · 不发送]') || !item.subject.includes(expectedWeek))) continue;
         consider(detail(item.id));
       }
       requireCheck(ids.size <= count, 'pagination', 'Email pagination exceeds its declared count.');
@@ -164,7 +160,7 @@ export function syncButtondownDraft({ root, expectedWeek, apiToken, request } = 
       }
       const next = new URL(result.next, ORIGIN);
       requireCheck(page < 10 && ids.size < count && next.origin === ORIGIN && next.pathname === '/v1/emails' && !next.hash && !next.username && !next.password &&
-        next.searchParams.get('subject') === expectedWeek && next.searchParams.get('page') === String(page + 1) && [...next.searchParams.keys()].sort().join(',') === 'page,subject',
+        next.searchParams.get('subject') === searchSubject && next.searchParams.get('page') === String(page + 1) && [...next.searchParams.keys()].sort().join(',') === 'page,subject',
       'pagination', 'Email pagination is untrusted, inconsistent, or exceeds ten pages.');
     }
     if (manifest.remote?.url) {
@@ -179,7 +175,7 @@ export function syncButtondownDraft({ root, expectedWeek, apiToken, request } = 
     if (!email) {
       requireCheck(!pending, 'create_unresolved', 'An earlier create has an unresolved outcome; no new POST or idempotency key is allowed.');
       requireCheck(sha(read(manifestPath)) === sha(original) && sha(read(bodyPath)) === manifest.bodySha256 && sha(read(join(root, 'content', `${expectedWeek}.json`))) === manifest.inputSha256, 'local_binding', 'Local draft input changed during API verification.');
-      pending = { schemaVersion: 1, week: expectedWeek, issueUrl: manifest.issueUrl, idempotencyKey: randomUUID(), payloadSha256, createdAt: new Date().toISOString(), status: 'pending_outcome', remoteId: null };
+      pending = { schemaVersion: 1, week: expectedWeek, ...(testMode ? { testId: emailTestId } : {}), issueUrl: manifest.issueUrl, idempotencyKey: randomUUID(), payloadSha256, createdAt: new Date().toISOString(), status: 'pending_outcome', remoteId: null };
       // Exclusive creation prevents concurrent runners from issuing different keys.
       writeFileSync(createPath, jsonBytes(pending), { flag: 'wx', mode: 0o600 });
       const created = call({ method: 'POST', path: '/v1/emails', payload, idempotencyKey: pending.idempotencyKey });
@@ -190,20 +186,21 @@ export function syncButtondownDraft({ root, expectedWeek, apiToken, request } = 
       requireCheck(email.subject === payload.subject && normalizedBody(email.body) === normalizedBody(body), 'create_readback', 'Created draft content differs on readback; preserve it for review.');
     }
     if (email.status !== 'draft') throw Object.assign(failure('remote_status', 'The matching email is not a draft; no creation, update, or sending is allowed.'), { actualRemoteStatus: email.status });
+    if (testMode) requireCheck(email.subject === payload.subject && normalizedBody(email.body) === normalizedBody(body), 'test_readback', 'The isolated test draft differs from its prepared content; preserve it for review.');
     requireCheck(sha(read(manifestPath)) === sha(original) && sha(read(bodyPath)) === manifest.bodySha256 && sha(read(join(root, 'content', `${expectedWeek}.json`))) === manifest.inputSha256, 'local_binding', 'Local draft state changed during synchronization; preserve it for review.');
     const remoteBodySha256 = sha(normalizedBody(email.body));
     const remote = { ...manifest.remote, id: email.id, status: 'draft', url: `https://buttondown.com/emails/${email.id}`, bodySha256: remoteBodySha256,
       verifiedAt: new Date().toISOString(), preservedExisting: reused, differsFromLocal: email.subject !== payload.subject || normalizedBody(email.body) !== normalizedBody(body),
       changedSinceLastVerification: Boolean(manifest.remote?.bodySha256 && manifest.remote.bodySha256 !== remoteBodySha256) };
-    const updated = { ...manifest, status: 'awaiting_owner_review', remote };
+    const updated = { ...manifest, status: testMode ? 'test_draft_verified' : 'awaiting_owner_review', remote };
     save(manifestPath, updated);
     if (pending) save(createPath, { ...pending, status: 'resolved', remoteId: email.id, resolvedAt: remote.verifiedAt });
     rmSync(errorPath, { force: true });
     rmSync(join(directory, 'sync-pending.json'), { force: true });
-    return { status: updated.status, reused, url: remote.url, week: expectedWeek };
+    return { status: updated.status, reused, url: remote.url, week: expectedWeek, ...(testMode ? { testId: emailTestId } : {}) };
   } catch (error) {
     const safe = error.buttondownSafe ? error : failure('local_state', 'Buttondown synchronization could not verify local state; preserve it for manual recovery.');
-    if (existsSync(directory)) save(errorPath, { status: 'pending', week: expectedWeek, attemptedAt: new Date().toISOString(), code: safe.code, message: safe.message,
+    if (existsSync(directory)) save(errorPath, { status: 'pending', week: expectedWeek, ...(testMode ? { testId: emailTestId } : {}), attemptedAt: new Date().toISOString(), code: safe.code, message: safe.message,
       ...(safe.actualRemoteStatus ? { actualRemoteStatus: safe.actualRemoteStatus } : {}) });
     throw safe;
   }
